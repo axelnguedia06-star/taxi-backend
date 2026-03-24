@@ -16,7 +16,7 @@ console.log(`🚀 Environnement: ${NODE_ENV}`);
 console.log(`🌐 Port: ${PORT}`);
 
 // ========== CONFIGURATION CORS ==========
-const corsOptions = {
+/*const corsOptions = {
     origin: function (origin, callback) {
         // En développement, tout autoriser
         if (!isProduction) {
@@ -26,7 +26,7 @@ const corsOptions = {
 
         // En production, autoriser seulement :
         const allowedOrigins = [
-            'https://votre-app.netlify.app',      // Votre frontend Netlify
+            'https://69bbde511f57e6be3c0fdc4f--stellular-arithmetic-650ee8.netlify.app',      // Votre frontend Netlify
             'https://*.netlify.app',              // Tous les sous-domaines Netlify     
             'http://localhost:3000',              // Développement local
             'http://127.0.0.1:3000'               // Développement local
@@ -52,7 +52,8 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions)); // Pré-vols OPTIONS
+app.options('*', cors(corsOptions)); // Pré-vols OPTIONS*/
+
 
 // ========== MIDDLEWARE ==========
 app.use(express.json());
@@ -62,6 +63,84 @@ app.use(express.urlencoded({ extended: true }));
 app.use((req, res, next) => {
     console.log(`📥 ${req.method} ${req.url} - ${new Date().toISOString()}`);
     next();
+});
+
+// ========== CONFIGURATION CORS POUR NETLIFY ==========
+const corsOptions = {
+    origin: function (origin, callback) {
+        // Liste des origines autorisées
+        const allowedOrigins = [
+            'https://69bbde511f57e6be3c0fdc4f--stellular-arithmetic-650ee8.netlify.app',      // VOTRE URL NETLIFY
+            'https://*.netlify.app',              // Tous Netlify
+            'http://localhost:3000',              // Dev local
+            'http://127.0.0.1:3000',              // Dev local
+            'http://localhost:8080',              // Autre port dev
+            null                                  // Pour Postman, curl
+        ];
+
+        // En développement, tout autoriser
+        if (process.env.NODE_ENV !== 'production') {
+            callback(null, true);
+            return;
+        }
+
+        // Vérifier l'origine
+        if (!origin || allowedOrigins.some(allowed => {
+            if (!allowed) return true;
+            if (allowed.includes('*')) {
+                const regex = new RegExp(allowed.replace('*', '.*'));
+                return regex.test(origin);
+            }
+            return origin === allowed;
+        })) {
+            callback(null, true);
+        } else {
+            console.error(`🚫 Origine bloquée: ${origin}`);
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin']
+};
+
+app.use(cors(corsOptions));
+
+// Gérer les pré-vols OPTIONS
+app.options('*', cors(corsOptions));
+
+// ========== ROUTE RACINE ==========
+app.get('/', (req, res) => {
+    res.json({
+        success: true,
+        message: '🚖 API Taxi Manager - Backend',
+        version: '1.0.0',
+        environment: process.env.NODE_ENV || 'development',
+        timestamp: new Date().toISOString(),
+        documentation: {
+            health: 'GET /api/health',
+            journees: 'GET /api/journees',
+            vehicules: 'GET /api/vehicules',
+            chauffeurs: 'GET /api/chauffeurs',
+            depenses: 'GET /api/depenses',
+            stats: 'GET /api/stats'
+        },
+        note: 'Frontend: https://69bbde511f57e6be3c0fdc4f--stellular-arithmetic-650ee8.netlify.app'
+    });
+});
+
+// ========== ROUTE DE SANTÉ ==========
+app.get('/api/health', (req, res) => {
+    res.json({
+        success: true,
+        message: '✅ API Taxi Manager en ligne',
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        environment: process.env.NODE_ENV || 'development',
+        database: 'connected',
+        cors: 'enabled',
+        origin: req.headers.origin || 'unknown'
+    });
 });
 
 // ========== BASE DE DONNÉES ==========
