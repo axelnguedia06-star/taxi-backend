@@ -8,7 +8,7 @@ const fs = require('fs');
 const app = express();
 
 // ========== CONFIGURATION CORS POUR NETLIFY ==========
-const corsOptions = {
+/*const corsOptions = {
     origin: 'https://stellular-arithmetic-650ee8.netlify.app',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin'],
@@ -17,7 +17,57 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
+app.options('*', cors(corsOptions));*/
+
+const corsOptions = {
+    origin: 'https://stellular-arithmetic-650ee8.netlify.app',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH', 'HEAD'],
+    allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'Accept',
+        'Origin',
+        'X-Requested-With',
+        'Cache-Control',
+        'Pragma',
+        'If-Modified-Since'
+    ],
+    exposedHeaders: ['Content-Length', 'X-Request-Id'],
+    credentials: true,
+    maxAge: 86400,
+    preflightContinue: false,
+    optionsSuccessStatus: 204
+};
+
+app.use(cors(corsOptions));
+
+// Gérer explicitement les pré-vols OPTIONS
+app.options('*', (req, res) => {
+    res.header('Access-Control-Allow-Origin', 'https://stellular-arithmetic-650ee8.netlify.app');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD');
+    res.header('Access-Control-Allow-Headers',
+        'Content-Type, Authorization, Accept, Origin, X-Requested-With, Cache-Control, Pragma, If-Modified-Since');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Max-Age', '86400');
+    res.status(204).end();
+});
+
+// Middleware pour ajouter les headers CORS manuellement
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', 'https://stellular-arithmetic-650ee8.netlify.app');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD');
+    res.header('Access-Control-Allow-Headers',
+        'Content-Type, Authorization, Accept, Origin, X-Requested-With, Cache-Control, Pragma, If-Modified-Since');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Max-Age', '86400');
+
+    // Pour les requêtes OPTIONS, répondre immédiatement
+    if (req.method === 'OPTIONS') {
+        return res.status(204).end();
+    }
+
+    next();
+});
 
 // ========== MIDDLEWARE ==========
 app.use(express.json());
