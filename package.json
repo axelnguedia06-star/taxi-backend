@@ -2,7 +2,7 @@
   "name": "taxi-manager-api",
   "version": "1.0.0",
   "description": "API backend pour Taxi Manager",
-  "main": "server-deploy.js",
+  "main": "server-cors-fixed.js",
   "scripts": {
     "start": "node server-cors-fixed.js",
     "dev": "nodemon server-cors-fixed.js",
