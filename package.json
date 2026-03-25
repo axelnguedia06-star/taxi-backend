@@ -4,8 +4,8 @@
   "description": "API backend pour Taxi Manager",
   "main": "server-deploy.js",
   "scripts": {
-    "start": "node server-deploy.js",
-    "dev": "nodemon server-deploy.js",
+    "start": "node server-cors-fixed.js",
+    "dev": "nodemon server-cors-fixed.js",
     "test": "echo \"No tests yet\" && exit 0"
   },
   "engines": {
