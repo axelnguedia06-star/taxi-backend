@@ -1208,7 +1208,7 @@ app.put('/api/categories/:id', (req, res) => {
 });
 
 // DELETE supprimer une catégorie
-app.delete('/api/categories/:id', (req, res) => {
+/*app.delete('/api/categories/:id', (req, res) => {
     const id = parseInt(req.params.id);
     console.log('🗑️ Suppression catégorie ID:', id);
 
@@ -1232,6 +1232,81 @@ app.delete('/api/categories/:id', (req, res) => {
                 message: 'Catégorie non trouvée'
             });
         }
+    });
+});*/
+
+// DELETE supprimer une catégorie - VERSION SIMPLIFIÉE
+// ========== ROUTE DELETE CATÉGORIE ==========
+app.delete('/api/categories/:id', (req, res) => {
+    const id = parseInt(req.params.id);
+    console.log('🗑️ DELETE /api/categories/:id - ID:', id);
+
+    if (isNaN(id)) {
+        return res.status(400).json({
+            success: false,
+            message: 'ID invalide'
+        });
+    }
+
+    // Vérifier d'abord si la catégorie existe
+    db.get('SELECT id FROM categories WHERE id = ?', [id], (err, row) => {
+        if (err) {
+            console.error('❌ Erreur vérification catégorie:', err.message);
+            return res.status(500).json({
+                success: false,
+                message: 'Erreur vérification: ' + err.message
+            });
+        }
+
+        if (!row) {
+            console.log('❌ Catégorie non trouvée pour suppression ID:', id);
+            return res.status(404).json({
+                success: false,
+                message: 'Catégorie non trouvée'
+            });
+        }
+
+        // Vérifier s'il y a des dépenses liées
+        db.get('SELECT COUNT(*) as count FROM depenses WHERE categorie_id = ?', [id], (err, result) => {
+            if (err) {
+                console.error('❌ Erreur vérification dépenses:', err.message);
+                return res.status(500).json({
+                    success: false,
+                    message: 'Erreur vérification dépenses: ' + err.message
+                });
+            }
+
+            if (result && result.count > 0) {
+                console.log('❌ Dépenses liées trouvées:', result.count);
+                return res.status(400).json({
+                    success: false,
+                    message: `Impossible de supprimer : ${result.count} dépense(s) liée(s) à cette catégorie`
+                });
+            }
+
+            // Supprimer la catégorie
+            db.run('DELETE FROM categories WHERE id = ?', [id], function(err) {
+                if (err) {
+                    console.error('❌ Erreur DELETE catégorie:', err.message);
+                    res.status(500).json({
+                        success: false,
+                        message: 'Erreur suppression: ' + err.message
+                    });
+                } else if (this.changes > 0) {
+                    console.log('✅ Catégorie supprimée ID:', id);
+                    res.json({
+                        success: true,
+                        message: 'Catégorie supprimée avec succès'
+                    });
+                } else {
+                    console.log('❌ Aucune ligne affectée ID:', id);
+                    res.status(404).json({
+                        success: false,
+                        message: 'Catégorie non trouvée'
+                    });
+                }
+            });
+        });
     });
 });
 
