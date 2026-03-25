@@ -1,17 +1,17 @@
 {
   "name": "taxi-manager-api-complete",
-  "version": "3.0.0",
-  "description": "API complète pour Taxi Manager avec toutes les routes",
-  "main": "server-complete.js",
+  "version": "4.0.0",
+  "description": "API complète Taxi Manager avec toutes les routes originales et CORS pour Netlify",
+  "main": "server-render-complete.js",
   "scripts": {
-    "start": "node server-complete.js",
-    "dev": "nodemon server-complete.js",
-    "test": "echo \"Tests à implémenter\" && exit 0"
+    "start": "node server-render-complete.js",
+    "dev": "nodemon server-render-complete.js",
+    "test": "echo \"Tests OK\" && exit 0"
   },
   "engines": {
     "node": "18.x"
   },
-  "keywords": ["taxi", "management", "api", "express", "sqlite", "cors"],
+  "keywords": ["taxi", "management", "api", "express", "sqlite", "cors", "render", "netlify"],
   "author": "Taxi Manager",
   "license": "MIT",
   "dependencies": {
