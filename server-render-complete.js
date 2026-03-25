@@ -1737,6 +1737,193 @@ app.get('/api/depenses/par-journee-date', (req, res) => {
     });
 });
 
+// ========== ROUTES CATÉGORIES MANQUANTES ==========
+
+// PUT modifier une catégorie
+app.put('/api/categories/:id', (req, res) => {
+    const id = parseInt(req.params.id);
+    const data = req.body;
+    console.log('✏️ PUT /api/categories/:id - ID:', id, 'Data:', data);
+
+    if (isNaN(id)) {
+        return res.status(400).json({
+            success: false,
+            message: 'ID invalide'
+        });
+    }
+
+    // Validation
+    if (!data.nom || !data.type) {
+        return res.status(400).json({
+            success: false,
+            message: 'Nom et type sont obligatoires'
+        });
+    }
+
+    // Vérifier si le nom existe déjà (sauf pour cette catégorie)
+    db.get('SELECT id FROM categories WHERE nom = ? AND id != ?',
+           [data.nom, id], (err, row) => {
+        if (err) {
+            return res.status(500).json({
+                success: false,
+                message: 'Erreur vérification nom: ' + err.message
+            });
+        }
+
+        if (row) {
+            return res.status(409).json({
+                success: false,
+                message: 'Ce nom de catégorie existe déjà',
+                code: 'DUPLICATE_CATEGORY'
+            });
+        }
+
+        // Mettre à jour
+        const sql = `
+            UPDATE categories
+            SET nom = ?, type = ?, description = ?
+            WHERE id = ?
+        `;
+
+        const params = [
+            data.nom,
+            data.type,
+            data.description || '',
+            id
+        ];
+
+        db.run(sql, params, function(err) {
+            if (err) {
+                console.error('❌ Erreur UPDATE catégorie:', err.message);
+                res.status(500).json({
+                    success: false,
+                    message: 'Erreur modification: ' + err.message
+                });
+            } else if (this.changes > 0) {
+                console.log('✅ Catégorie modifiée');
+                res.json({
+                    success: true,
+                    message: 'Catégorie modifiée avec succès'
+                });
+            } else {
+                res.status(404).json({
+                    success: false,
+                    message: 'Catégorie non trouvée'
+                });
+            }
+        });
+    });
+});
+
+// DELETE supprimer une catégorie
+app.delete('/api/categories/:id', (req, res) => {
+    const id = parseInt(req.params.id);
+    console.log('🗑️ DELETE /api/categories/:id - ID:', id);
+
+    if (isNaN(id)) {
+        return res.status(400).json({
+            success: false,
+            message: 'ID invalide'
+        });
+    }
+
+    // Vérifier d'abord si la catégorie existe
+    db.get('SELECT id FROM categories WHERE id = ?', [id], (err, row) => {
+        if (err) {
+            console.error('❌ Erreur vérification catégorie:', err.message);
+            return res.status(500).json({
+                success: false,
+                message: 'Erreur vérification: ' + err.message
+            });
+        }
+
+        if (!row) {
+            console.log('❌ Catégorie non trouvée pour suppression ID:', id);
+            return res.status(404).json({
+                success: false,
+                message: 'Catégorie non trouvée'
+            });
+        }
+
+        // Vérifier s'il y a des dépenses liées
+        db.get('SELECT COUNT(*) as count FROM depenses WHERE categorie_id = ?', [id], (err, result) => {
+            if (err) {
+                console.error('❌ Erreur vérification dépenses:', err.message);
+                return res.status(500).json({
+                    success: false,
+                    message: 'Erreur vérification dépenses: ' + err.message
+                });
+            }
+
+            if (result && result.count > 0) {
+                console.log('❌ Dépenses liées trouvées:', result.count);
+                return res.status(400).json({
+                    success: false,
+                    message: `Impossible de supprimer : ${result.count} dépense(s) liée(s) à cette catégorie`
+                });
+            }
+
+            // Supprimer la catégorie
+            db.run('DELETE FROM categories WHERE id = ?', [id], function(err) {
+                if (err) {
+                    console.error('❌ Erreur DELETE catégorie:', err.message);
+                    res.status(500).json({
+                        success: false,
+                        message: 'Erreur suppression: ' + err.message
+                    });
+                } else if (this.changes > 0) {
+                    console.log('✅ Catégorie supprimée ID:', id);
+                    res.json({
+                        success: true,
+                        message: 'Catégorie supprimée avec succès'
+                    });
+                } else {
+                    console.log('❌ Aucune ligne affectée ID:', id);
+                    res.status(404).json({
+                        success: false,
+                        message: 'Catégorie non trouvée'
+                    });
+                }
+            });
+        });
+    });
+});
+
+// GET une catégorie spécifique
+app.get('/api/categories/:id', (req, res) => {
+    const id = parseInt(req.params.id);
+    console.log('📥 GET /api/categories/:id - ID:', id);
+
+    if (isNaN(id)) {
+        return res.status(400).json({
+            success: false,
+            message: 'ID invalide'
+        });
+    }
+
+    db.get('SELECT * FROM categories WHERE id = ?', [id], (err, row) => {
+        if (err) {
+            console.error('❌ Erreur GET catégorie:', err.message);
+            res.status(500).json({
+                success: false,
+                message: 'Erreur serveur: ' + err.message
+            });
+        } else if (row) {
+            console.log('✅ Catégorie trouvée:', row.id);
+            res.json({
+                success: true,
+                categorie: row
+            });
+        } else {
+            console.log('❌ Catégorie non trouvée ID:', id);
+            res.status(404).json({
+                success: false,
+                message: 'Catégorie non trouvée'
+            });
+        }
+    });
+});
+
 // ========== ROUTES PAGES (pour compatibilité) ==========
 
 // Ces routes servent juste à éviter les erreurs 404
