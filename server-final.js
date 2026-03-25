@@ -32,6 +32,109 @@ app.use((req, res, next) => {
 const db = new sqlite3.Database(':memory:');
 
 // Initialiser la DB avec données de test
+// Dans server.js, au début après la connexion à la base de données
+db.serialize(() => {
+  // Créer la table chauffeurs si elle n'existe pas
+  db.run(`
+    CREATE TABLE IF NOT EXISTS chauffeurs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nom TEXT NOT NULL,
+      prenom TEXT NOT NULL,
+      telephone TEXT NOT NULL,
+      permis_numero TEXT NOT NULL,
+      statut TEXT DEFAULT 'actif',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `, (err) => {
+    if (err) {
+      console.error('Erreur création table chauffeurs:', err.message);
+    } else {
+      console.log('✅ Table chauffeurs vérifiée/créée');
+    }
+  });
+
+  // Créer la table vehicules si elle n'existe pas
+  db.run(`
+    CREATE TABLE IF NOT EXISTS vehicules (
+      immatriculation TEXT PRIMARY KEY,
+      marque TEXT NOT NULL,
+      modele TEXT NOT NULL,
+      annee INTEGER,
+      couleur TEXT,
+      kilometrage_actuel INTEGER DEFAULT 0,
+      statut TEXT DEFAULT 'actif',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `, (err) => {
+    if (err) {
+      console.error('Erreur création table vehicules:', err.message);
+    } else {
+      console.log('✅ Table vehicules vérifiée/créée');
+    }
+  });
+
+  // Créer la table journees si elle n'existe pas
+  db.run(`
+    CREATE TABLE IF NOT EXISTS journees (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date DATE NOT NULL,
+      vehicule_immat TEXT NOT NULL,
+      chauffeur_id INTEGER NOT NULL,
+      recette_total DECIMAL(10,2) DEFAULT 0,
+      manquant DECIMAL(10,2) DEFAULT 0,
+      notes TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (vehicule_immat) REFERENCES vehicules(immatriculation),
+      FOREIGN KEY (chauffeur_id) REFERENCES chauffeurs(id)
+    )
+  `, (err) => {
+    if (err) {
+      console.error('Erreur création table journees:', err.message);
+    } else {
+      console.log('✅ Table journees vérifiée/créée');
+    }
+  });
+
+  // Créer la table categories si elle n'existe pas
+  db.run(`
+    CREATE TABLE IF NOT EXISTS categories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nom TEXT NOT NULL,
+      type TEXT NOT NULL,
+      description TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `, (err) => {
+    if (err) {
+      console.error('Erreur création table categories:', err.message);
+    } else {
+      console.log('✅ Table categories vérifiée/créée');
+    }
+  });
+
+  // Créer la table depenses si elle n'existe pas
+  db.run(`
+    CREATE TABLE IF NOT EXISTS depenses (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      journee_id INTEGER,
+      categorie_id INTEGER NOT NULL,
+      montant DECIMAL(10,2) NOT NULL,
+      description TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (journee_id) REFERENCES journees(id),
+      FOREIGN KEY (categorie_id) REFERENCES categories(id)
+    )
+  `, (err) => {
+    if (err) {
+      console.error('Erreur création table depenses:', err.message);
+    } else {
+      console.log('✅ Table depenses vérifiée/créée');
+    }
+  });
+});
+
+console.log('🚖 Taxi Yaoundé - Version minimaliste');
+
 /*db.serialize(() => {
     // Table journées
     db.run(`
@@ -76,7 +179,7 @@ const db = new sqlite3.Database(':memory:');
             categorie TEXT DEFAULT 'Autre',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    `);
+    `);*/
 
     // Données de test
     db.run(`INSERT OR IGNORE INTO vehicules VALUES ('AB-123-CD', 'Toyota', 'Corolla', 'actif')`);
@@ -115,7 +218,7 @@ app.get('/', (req, res) => {
             stats: 'GET /api/stats'
         }
     });
-});*/
+});
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -283,108 +386,7 @@ app.get('/api/stats', (req, res) => {
     });
 });*/
 
-// Dans server.js, au début après la connexion à la base de données
-db.serialize(() => {
-  // Créer la table chauffeurs si elle n'existe pas
-  db.run(`
-    CREATE TABLE IF NOT EXISTS chauffeurs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      nom TEXT NOT NULL,
-      prenom TEXT NOT NULL,
-      telephone TEXT NOT NULL,
-      permis_numero TEXT NOT NULL,
-      statut TEXT DEFAULT 'actif',
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `, (err) => {
-    if (err) {
-      console.error('Erreur création table chauffeurs:', err.message);
-    } else {
-      console.log('✅ Table chauffeurs vérifiée/créée');
-    }
-  });
 
-  // Créer la table vehicules si elle n'existe pas
-  db.run(`
-    CREATE TABLE IF NOT EXISTS vehicules (
-      immatriculation TEXT PRIMARY KEY,
-      marque TEXT NOT NULL,
-      modele TEXT NOT NULL,
-      annee INTEGER,
-      couleur TEXT,
-      kilometrage_actuel INTEGER DEFAULT 0,
-      statut TEXT DEFAULT 'actif',
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `, (err) => {
-    if (err) {
-      console.error('Erreur création table vehicules:', err.message);
-    } else {
-      console.log('✅ Table vehicules vérifiée/créée');
-    }
-  });
-
-  // Créer la table journees si elle n'existe pas
-  db.run(`
-    CREATE TABLE IF NOT EXISTS journees (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      date DATE NOT NULL,
-      vehicule_immat TEXT NOT NULL,
-      chauffeur_id INTEGER NOT NULL,
-      recette_total DECIMAL(10,2) DEFAULT 0,
-      manquant DECIMAL(10,2) DEFAULT 0,
-      notes TEXT,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (vehicule_immat) REFERENCES vehicules(immatriculation),
-      FOREIGN KEY (chauffeur_id) REFERENCES chauffeurs(id)
-    )
-  `, (err) => {
-    if (err) {
-      console.error('Erreur création table journees:', err.message);
-    } else {
-      console.log('✅ Table journees vérifiée/créée');
-    }
-  });
-
-  // Créer la table categories si elle n'existe pas
-  db.run(`
-    CREATE TABLE IF NOT EXISTS categories (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      nom TEXT NOT NULL,
-      type TEXT NOT NULL,
-      description TEXT,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `, (err) => {
-    if (err) {
-      console.error('Erreur création table categories:', err.message);
-    } else {
-      console.log('✅ Table categories vérifiée/créée');
-    }
-  });
-
-  // Créer la table depenses si elle n'existe pas
-  db.run(`
-    CREATE TABLE IF NOT EXISTS depenses (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      journee_id INTEGER,
-      categorie_id INTEGER NOT NULL,
-      montant DECIMAL(10,2) NOT NULL,
-      description TEXT NOT NULL,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (journee_id) REFERENCES journees(id),
-      FOREIGN KEY (categorie_id) REFERENCES categories(id)
-    )
-  `, (err) => {
-    if (err) {
-      console.error('Erreur création table depenses:', err.message);
-    } else {
-      console.log('✅ Table depenses vérifiée/créée');
-    }
-  });
-});
-
-console.log('🚖 Taxi Yaoundé - Version minimaliste');
 
 // Middleware
 app.use(express.json());
