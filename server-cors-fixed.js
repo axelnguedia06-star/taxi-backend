@@ -186,3 +186,20 @@ app.listen(PORT, () => {
     console.log(`🔧 CORS: Activé pour toutes les origines`);
     console.log('='.repeat(60));
 });
+
+// Dans votre server-deploy.js sur Render, AJOUTEZ :
+app.get('/api/debug', (req, res) => {
+    res.json({
+        success: true,
+        message: 'Debug endpoint',
+        headers: req.headers,
+        timestamp: new Date().toISOString(),
+        node_env: process.env.NODE_ENV,
+        cors_enabled: true,
+        allowed_origins: [
+            'https://stellular-arithmetic-650ee8.netlify.app',
+            'https://*.netlify.app',
+            'http://localhost:3000'
+        ]
+    });
+});
