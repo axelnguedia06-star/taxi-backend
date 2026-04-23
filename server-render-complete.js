@@ -7,21 +7,7 @@ const fs = require('fs');
 
 const app = express();
 
-//const sqlite3 = require('sqlite3').verbose(); const DATABASE_URL = 'postgresql://postgres:Godwilling_2026@db.ixaepopwzaqhylthoapg.supabase.co:5432/postgres';
-const { Pool } = require('pg');
-
-// Utilise ta chaîne de connexion Supabase (à mettre dans tes variables d'environnement sur Render)
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false } // Obligatoire pour Supabase/Render
-});
-
-// Test de connexion
-pool.connect((err, client, release) => {
-  if (err) return console.error('❌ Erreur de connexion Supabase:', err.stack);
-  console.log('✅ Connecté à la base de données PostgreSQL (Supabase)');
-  release();
-});
+const sqlite3 = require('sqlite3').verbose();
 
 // ========== CONFIGURATION CORS POUR NETLIFY ==========
 /*const corsOptions = {
