@@ -108,7 +108,7 @@ async function insertDefaultCategories() {
 }
 
 // ========== CONFIGURATION SERVEUR ==========
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 5432;
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const isProduction = NODE_ENV === 'production';
 
