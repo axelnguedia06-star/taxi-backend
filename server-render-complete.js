@@ -1,2166 +1,741 @@
-// server-render-complete.js - Version complète pour Render avec CORS
+// server-deploy.js - Version PostgreSQL pour déploiement Heroku/Render
 const express = require('express');
 const path = require('path');
 const cors = require('cors');
-//const sqlite3 = require('sqlite3').verbose();
-const fs = require('fs');
+const { Pool } = require('pg');
 
 const app = express();
 
-const sqlite3 = require('sqlite3').verbose();
-
-// ========== CONFIGURATION CORS POUR NETLIFY ==========
-/*const corsOptions = {
-    origin: 'https://stellular-arithmetic-650ee8.netlify.app',
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin'],
-    credentials: true,
-    maxAge: 86400
-};
-
-app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));*/
-
-const corsOptions = {
-    origin: 'https://stellular-arithmetic-650ee8.netlify.app',
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH', 'HEAD'],
-    allowedHeaders: [
-        'Content-Type',
-        'Authorization',
-        'Accept',
-        'Origin',
-        'X-Requested-With',
-        'Cache-Control',
-        'Pragma',
-        'If-Modified-Since'
-    ],
-    exposedHeaders: ['Content-Length', 'X-Request-Id'],
-    credentials: true,
-    maxAge: 86400,
-    preflightContinue: false,
-    optionsSuccessStatus: 204
-};
-
-app.use(cors(corsOptions));
-
-// Gérer explicitement les pré-vols OPTIONS
-app.options('*', (req, res) => {
-    res.header('Access-Control-Allow-Origin', 'https://stellular-arithmetic-650ee8.netlify.app');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD');
-    res.header('Access-Control-Allow-Headers',
-        'Content-Type, Authorization, Accept, Origin, X-Requested-With, Cache-Control, Pragma, If-Modified-Since');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    res.header('Access-Control-Max-Age', '86400');
-    res.status(204).end();
+// ========== CONFIGURATION BASE DE DONNÉES (SUPABASE / RENDER) ==========
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false } // Obligatoire pour Supabase, Render, etc.
 });
 
-// Middleware pour ajouter les headers CORS manuellement
-app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', 'https://stellular-arithmetic-650ee8.netlify.app');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD');
-    res.header('Access-Control-Allow-Headers',
-        'Content-Type, Authorization, Accept, Origin, X-Requested-With, Cache-Control, Pragma, If-Modified-Since');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    res.header('Access-Control-Max-Age', '86400');
+// Test de connexion et initialisation des tables
+pool.connect(async (err, client, release) => {
+  if (err) {
+    console.error('❌ Erreur de connexion PostgreSQL:', err.stack);
+    process.exit(1);
+  }
+  console.log('✅ Connecté à PostgreSQL (Supabase)');
+  release();
 
-    // Pour les requêtes OPTIONS, répondre immédiatement
-    if (req.method === 'OPTIONS') {
-        return res.status(204).end();
+  // Création des tables et données par défaut
+  await createTables();
+  await insertDefaultCategories();
+});
+
+// ========== CRÉATION DES TABLES (POSTGRESQL) ==========
+async function createTables() {
+  const queries = [
+    `CREATE TABLE IF NOT EXISTS chauffeurs (
+        id SERIAL PRIMARY KEY,
+        nom TEXT NOT NULL,
+        prenom TEXT NOT NULL,
+        telephone TEXT NOT NULL,
+        permis_numero TEXT NOT NULL UNIQUE,
+        statut TEXT DEFAULT 'actif',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS vehicules (
+        immatriculation TEXT PRIMARY KEY,
+        marque TEXT NOT NULL,
+        modele TEXT NOT NULL,
+        annee INTEGER,
+        couleur TEXT,
+        kilometrage_actuel INTEGER DEFAULT 0,
+        statut TEXT DEFAULT 'actif',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS journees (
+        id SERIAL PRIMARY KEY,
+        date DATE NOT NULL,
+        vehicule_immat TEXT NOT NULL REFERENCES vehicules(immatriculation),
+        chauffeur_id INTEGER NOT NULL REFERENCES chauffeurs(id),
+        recette_total DECIMAL(10,2) DEFAULT 0,
+        manquant DECIMAL(10,2) DEFAULT 0,
+        notes TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS categories (
+        id SERIAL PRIMARY KEY,
+        nom TEXT NOT NULL UNIQUE,
+        type TEXT NOT NULL,
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS depenses (
+        id SERIAL PRIMARY KEY,
+        journee_id INTEGER REFERENCES journees(id) ON DELETE SET NULL,
+        categorie_id INTEGER NOT NULL REFERENCES categories(id),
+        montant DECIMAL(10,2) NOT NULL,
+        description TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`
+  ];
+
+  for (const query of queries) {
+    try {
+      await pool.query(query);
+    } catch (err) {
+      console.error('❌ Erreur création table:', err.message);
     }
+  }
+  console.log('✅ Tables PostgreSQL prêtes');
+}
 
-    next();
-});
+// ========== DONNÉES PAR DÉFAUT (CATÉGORIES) ==========
+async function insertDefaultCategories() {
+  const defaultCategories = [
+    ['Carburant', 'depense', 'Essence, diesel, gaz'],
+    ['Entretien moteur', 'depense', 'Vidange, Complément vidange, Filtres à huile, Bougies, Injecteurs'],
+    ['Péage', 'depense', 'Frais de péage'],
+    ['Nettoyage', 'depense', 'Lavage du véhicule'],
+    ['Administratif', 'depense', 'Assurance, Vignette, Carte bleue, Licence'],
+    ['Permis', 'depense', 'Renouvellement permis']
+  ];
+
+  for (const [nom, type, description] of defaultCategories) {
+    await pool.query(
+      `INSERT INTO categories (nom, type, description)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (nom) DO NOTHING`,
+      [nom, type, description]
+    );
+  }
+  console.log('✅ Catégories par défaut insérées');
+}
+
+// ========== CONFIGURATION SERVEUR ==========
+const PORT = process.env.PORT || 3001;
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const isProduction = NODE_ENV === 'production';
+
+console.log(`🚀 Environnement: ${NODE_ENV}`);
+console.log(`🌐 Port: ${PORT}`);
 
 // ========== MIDDLEWARE ==========
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Logging des requêtes
 app.use((req, res, next) => {
-    const timestamp = new Date().toISOString();
-    console.log(`[${timestamp}] ${req.method} ${req.url} - Origin: ${req.headers.origin}`);
-    next();
+  console.log(`📥 ${req.method} ${req.url} - ${new Date().toISOString()}`);
+  next();
 });
 
-// ========== BASE DE DONNÉES ==========
-const dbPath = path.join(__dirname, 'data', 'taxi-final.db');
-const dataDir = path.join(__dirname, 'data');
-
-// Créer le dossier data s'il n'existe pas
-if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-}
-
-const db = new sqlite3.Database(dbPath, (err) => {
-    if (err) {
-        console.error('❌ Erreur connexion DB:', err.message);
-    } else {
-        console.log('✅ Connecté à la DB:', dbPath);
-        initializeDatabase();
-    }
-});
-
-// Initialiser la base de données
-function initializeDatabase() {
-    db.serialize(() => {
-        // Table chauffeurs
-        db.run(`
-            CREATE TABLE IF NOT EXISTS chauffeurs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                nom TEXT NOT NULL,
-                prenom TEXT NOT NULL,
-                telephone TEXT NOT NULL,
-                permis_numero TEXT NOT NULL,
-                statut TEXT DEFAULT 'actif',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `, (err) => {
-            if (err) {
-                console.error('Erreur création table chauffeurs:', err.message);        
-            } else {
-                console.log('✅ Table chauffeurs vérifiée/créée');
-            }
-        });
-
-        // Table vehicules
-        db.run(`
-            CREATE TABLE IF NOT EXISTS vehicules (
-                immatriculation TEXT PRIMARY KEY,
-                marque TEXT NOT NULL,
-                modele TEXT NOT NULL,
-                annee INTEGER,
-                couleur TEXT,
-                kilometrage_actuel INTEGER DEFAULT 0,
-                statut TEXT DEFAULT 'actif',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `, (err) => {
-            if (err) {
-                console.error('Erreur création table vehicules:', err.message);
-            } else {
-                console.log('✅ Table vehicules vérifiée/créée');
-            }
-        });
-
-        // Table journees
-        db.run(`
-            CREATE TABLE IF NOT EXISTS journees (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date DATE NOT NULL,
-                vehicule_immat TEXT NOT NULL,
-                chauffeur_id INTEGER NOT NULL,
-                recette_total DECIMAL(10,2) DEFAULT 0,
-                manquant DECIMAL(10,2) DEFAULT 0,
-                notes TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (vehicule_immat) REFERENCES vehicules(immatriculation),     
-                FOREIGN KEY (chauffeur_id) REFERENCES chauffeurs(id)
-            )
-        `, (err) => {
-            if (err) {
-                console.error('Erreur création table journees:', err.message);
-            } else {
-                console.log('✅ Table journees vérifiée/créée');
-            }
-        });
-
-        // Table categories
-        db.run(`
-            CREATE TABLE IF NOT EXISTS categories (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                nom TEXT NOT NULL,
-                type TEXT NOT NULL,
-                description TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `, (err) => {
-            if (err) {
-                console.error('Erreur création table categories:', err.message);        
-            } else {
-                console.log('✅ Table categories vérifiée/créée');
-            }
-        });
-
-        // Table depenses
-        db.run(`
-            CREATE TABLE IF NOT EXISTS depenses (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                journee_id INTEGER,
-                categorie_id INTEGER NOT NULL,
-                montant DECIMAL(10,2) NOT NULL,
-                description TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (journee_id) REFERENCES journees(id),
-                FOREIGN KEY (categorie_id) REFERENCES categories(id)
-            )
-        `, (err) => {
-            if (err) {
-                console.error('Erreur création table depenses:', err.message);
-            } else {
-                console.log('✅ Table depenses vérifiée/créée');
-            }
-        });
-
-        // Insérer des données par défaut
-        setTimeout(() => {
-            insertDefaultData();
-        }, 1000);
-    });
-}
-
-function insertDefaultData() {
-    // Catégories par défaut
-    const defaultCategories = [
-        ['Carburant', 'depense', 'Essence, diesel, gaz'],
-        ['Entretien', 'depense', 'Vidange, réparations'],
-        ['Péage', 'depense', 'Frais de péage'],
-        ['Nettoyage', 'depense', 'Lavage du véhicule'],
-        ['Assurance', 'depense', 'Assurance annuelle'],
-        ['Permis', 'depense', 'Renouvellement permis']
+// ========== CORS (adapté à Netlify) ==========
+const corsOptions = {
+  origin: function (origin, callback) {
+    const allowedOrigins = [
+      'https://stellular-arithmetic-650ee8.netlify.app',
+      'https://*.netlify.app',
+      'http://localhost:3000',
+      'http://127.0.0.1:3000',
+      'http://localhost:8080',
+      null
     ];
-
-    defaultCategories.forEach(([nom, type, description]) => {
-        db.run(
-            'INSERT OR IGNORE INTO categories (nom, type, description) VALUES (?, ?, ?)',
-            [nom, type, description]
-        );
+    if (!isProduction) return callback(null, true);
+    const isAllowed = allowedOrigins.some(allowed => {
+      if (!allowed) return true;
+      if (allowed.includes('*')) {
+        const regex = new RegExp('^' + allowed.replace(/\*/g, '.*') + '$');
+        return regex.test(origin);
+      }
+      return origin === allowed;
     });
+    if (isAllowed) callback(null, true);
+    else callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
+  exposedHeaders: ['Content-Length', 'X-Request-Id'],
+  maxAge: 86400
+};
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
-    console.log('✅ Données par défaut insérées');
-}
-
-console.log('🚖 Taxi Yaoundé - Version Render avec CORS');
-
-// ========== ROUTES API ==========
-
-// Route racine
+// ========== ROUTES PUBLIQUES ==========
 app.get('/', (req, res) => {
-    res.json({
-        success: true,
-        message: '🚖 API Taxi Manager - Version Complète',
-        version: '4.0.0',
-        frontend: 'https://stellular-arithmetic-650ee8.netlify.app',
-        cors: 'activé',
-        database: 'sqlite',
-        endpoints: {
-            health: 'GET /api/health',
-            test: 'GET /api/test',
-            journees: 'GET /api/journees',
-            journee_by_id: 'GET /api/journees/:id',
-            vehicules: 'GET /api/vehicules',
-            vehicule_by_immat: 'GET /api/vehicules/:immatriculation',
-            chauffeurs: 'GET /api/chauffeurs',
-            chauffeur_by_id: 'GET /api/chauffeurs/:id',
-            categories: 'GET /api/categories',
-            categorie_by_id: 'GET /api/categories/:id',
-            depenses: 'GET /api/depenses',
-            depense_by_id: 'GET /api/depenses/:id',
-            stats: 'GET /api/stats',
-            depenses_filtres: 'GET /api/depenses/filtres',
-            depenses_stats: 'GET /api/depenses/stats',
-            depenses_par_date: 'GET /api/depenses/par-journee-date',
-            journees_filtres: 'GET /api/journees/filtres'
-        }
-    });
+  res.json({
+    success: true,
+    message: '🚖 API Taxi Manager - Backend (PostgreSQL)',
+    version: '1.0.0',
+    environment: NODE_ENV,
+    timestamp: new Date().toISOString()
+  });
 });
 
-// Test
-app.get('/api/test', (req, res) => {
-    res.json({
-        success: true,
-        message: 'API OK',
-        time: new Date().toISOString(),
-        cors: 'activé pour Netlify'
-    });
-});
-
-// Health check
 app.get('/api/health', (req, res) => {
-    res.json({
-        success: true,
-        message: '✅ API Taxi Manager en ligne',
-        timestamp: new Date().toISOString(),
-        cors: {
-            enabled: true,
-            allowed_origin: 'https://stellular-arithmetic-650ee8.netlify.app',
-            your_origin: req.headers.origin
-        },
-        database: 'connectée'
-    });
+  res.json({ success: true, status: 'healthy', database: 'PostgreSQL', timestamp: new Date().toISOString() });
 });
 
 // ========== ROUTES JOURNÉES ==========
-
-// GET toutes les journées avec filtres
-app.get('/api/journees', (req, res) => {
-    const { vehicule, date_debut, date_fin, tri } = req.query;
+app.get('/api/journees', async (req, res) => {
+  try {
+    const { vehicule, date_debut, date_fin, tri, limit = 50 } = req.query;
     let sql = `
-        SELECT j.*,
-               v.marque, v.modele, v.immatriculation,
-               c.nom as chauffeur_nom, c.prenom as chauffeur_prenom
-        FROM journees j
-        LEFT JOIN vehicules v ON j.vehicule_immat = v.immatriculation
-        LEFT JOIN chauffeurs c ON j.chauffeur_id = c.id
-        WHERE 1=1
+      SELECT j.*,
+             v.marque, v.modele, v.immatriculation,
+             c.nom as chauffeur_nom, c.prenom as chauffeur_prenom
+      FROM journees j
+      LEFT JOIN vehicules v ON j.vehicule_immat = v.immatriculation
+      LEFT JOIN chauffeurs c ON j.chauffeur_id = c.id
+      WHERE 1=1
     `;
     const params = [];
+    let paramIndex = 1;
 
     if (vehicule) {
-        sql += ' AND j.vehicule_immat = ?';
-        params.push(vehicule);
+      sql += ` AND j.vehicule_immat = $${paramIndex++}`;
+      params.push(vehicule);
     }
-
     if (date_debut) {
-        sql += ' AND j.date >= ?';
-        params.push(date_debut);
+      sql += ` AND j.date >= $${paramIndex++}`;
+      params.push(date_debut);
     }
-
     if (date_fin) {
-        sql += ' AND j.date <= ?';
-        params.push(date_fin);
+      sql += ` AND j.date <= $${paramIndex++}`;
+      params.push(date_fin);
     }
 
-    // Gestion du tri
-    switch(tri) {
-        case 'date_asc':
-            sql += ' ORDER BY j.date ASC';
-            break;
-        case 'recette_desc':
-            sql += ' ORDER BY j.recette_total DESC';
-            break;
-        case 'recette_asc':
-            sql += ' ORDER BY j.recette_total ASC';
-            break;
-        default: // date_desc par défaut
-            sql += ' ORDER BY j.date DESC';
+    switch (tri) {
+      case 'date_asc': sql += ' ORDER BY j.date ASC'; break;
+      case 'recette_desc': sql += ' ORDER BY j.recette_total DESC'; break;
+      case 'recette_asc': sql += ' ORDER BY j.recette_total ASC'; break;
+      default: sql += ' ORDER BY j.date DESC';
     }
+    sql += ` LIMIT $${paramIndex++}`;
+    params.push(parseInt(limit));
 
-    // Limiter à 50 résultats maximum
-    sql += ' LIMIT 50';
-
-    db.all(sql, params, (err, rows) => {
-        if (err) {
-            console.error('Erreur journées:', err.message);
-            res.status(500).json({ success: false, error: err.message });
-        } else {
-            res.json({ success: true, journees: rows });
-        }
-    });
+    const result = await pool.query(sql, params);
+    res.json({ success: true, journees: result.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-// POST créer une journée
-app.post('/api/journees', (req, res) => {
-    console.log('POST /api/journees', req.body);
-    const { date, vehicule_immat, chauffeur_id, recette_total, manquant, notes } = req.body;
+app.get('/api/journees/:id', async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) return res.status(400).json({ success: false, message: 'ID invalide' });
 
-    if (!date || !vehicule_immat || !chauffeur_id) {
-        return res.status(400).json({
-            success: false,
-            error: 'Date, véhicule et chauffeur requis'
-        });
-    }
-
-    db.run(`
-        INSERT INTO journees (date, vehicule_immat, chauffeur_id, recette_total, manquant, notes)
-        VALUES (?, ?, ?, ?, ?, ?)
-    `, [date, vehicule_immat, chauffeur_id, recette_total || 0, manquant || 0, notes || ''],
-    function(err) {
-        if (err) {
-            console.error('Erreur création:', err.message);
-            res.status(500).json({ success: false, error: err.message });
-        } else {
-            res.json({
-                success: true,
-                message: 'Journée créée',
-                id: this.lastID
-            });
-        }
-    });
+  try {
+    const result = await pool.query(
+      `SELECT j.*,
+              v.marque, v.modele, v.immatriculation,
+              c.nom as chauffeur_nom, c.prenom as chauffeur_prenom
+       FROM journees j
+       LEFT JOIN vehicules v ON j.vehicule_immat = v.immatriculation
+       LEFT JOIN chauffeurs c ON j.chauffeur_id = c.id
+       WHERE j.id = $1`,
+      [id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ success: false, message: 'Journée non trouvée' });
+    res.json({ success: true, journee: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-// GET une journée spécifique
-app.get('/api/journees/:id', (req, res) => {
-    const id = parseInt(req.params.id);
-    console.log('📥 GET /api/journees/:id - ID:', id);
+app.post('/api/journees', async (req, res) => {
+  const { date, vehicule_immat, chauffeur_id, recette_total, manquant, notes } = req.body;
+  if (!date || !vehicule_immat || !chauffeur_id) {
+    return res.status(400).json({ success: false, error: 'Date, véhicule et chauffeur requis' });
+  }
 
-    if (isNaN(id)) {
-        return res.status(400).json({
-            success: false,
-            message: 'ID invalide'
-        });
-    }
-
-    const sql = `
-        SELECT j.*,
-               v.marque, v.modele, v.immatriculation,
-               c.nom as chauffeur_nom, c.prenom as chauffeur_prenom
-        FROM journees j
-        LEFT JOIN vehicules v ON j.vehicule_immat = v.immatriculation
-        LEFT JOIN chauffeurs c ON j.chauffeur_id = c.id
-        WHERE j.id = ?
-    `;
-
-    db.get(sql, [id], (err, row) => {
-        if (err) {
-            console.error('❌ Erreur GET journée:', err.message);
-            res.status(500).json({
-                success: false,
-                message: 'Erreur serveur: ' + err.message
-            });
-        } else if (row) {
-            console.log('✅ Journée trouvée:', row.id);
-            res.json({
-                success: true,
-                journee: row
-            });
-        } else {
-            console.log('❌ Journée non trouvée ID:', id);
-            res.status(404).json({
-                success: false,
-                message: 'Journée non trouvée'
-            });
-        }
-    });
+  try {
+    const result = await pool.query(
+      `INSERT INTO journees (date, vehicule_immat, chauffeur_id, recette_total, manquant, notes)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      [date, vehicule_immat, chauffeur_id, recette_total || 0, manquant || 0, notes || '']
+    );
+    res.json({ success: true, message: 'Journée créée', id: result.rows[0].id });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-// PUT modifier une journée
-app.put('/api/journees/:id', (req, res) => {
-    const id = parseInt(req.params.id);
-    const data = req.body;
-    console.log('✏️ PUT /api/journees/:id - ID:', id, 'Data:', data);
+app.put('/api/journees/:id', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const { date, vehicule_immat, chauffeur_id, recette_total, manquant, notes } = req.body;
+  if (isNaN(id)) return res.status(400).json({ success: false, message: 'ID invalide' });
+  if (!date || !vehicule_immat || !chauffeur_id) {
+    return res.status(400).json({ success: false, message: 'Date, véhicule et chauffeur obligatoires' });
+  }
 
-    if (isNaN(id)) {
-        return res.status(400).json({
-            success: false,
-            message: 'ID invalide'
-        });
-    }
-
-    // Validation
-    if (!data.date || !data.vehicule_immat || !data.chauffeur_id) {
-        return res.status(400).json({
-            success: false,
-            message: 'Date, véhicule et chauffeur sont obligatoires'
-        });
-    }
-
-    const sql = `
-        UPDATE journees
-        SET date = ?, vehicule_immat = ?, chauffeur_id = ?,
-            recette_total = ?, manquant = ?, notes = ?
-        WHERE id = ?
-    `;
-
-    const params = [
-        data.date,
-        data.vehicule_immat,
-        data.chauffeur_id,
-        data.recette_total || 0,
-        data.manquant || 0,
-        data.notes || '',
-        id
-    ];
-
-    db.run(sql, params, function(err) {
-        if (err) {
-            console.error('❌ Erreur UPDATE journée:', err.message);
-            res.status(500).json({
-                success: false,
-                message: 'Erreur modification: ' + err.message
-            });
-        } else if (this.changes > 0) {
-            console.log('✅ Journée modifiée ID:', id);
-            res.json({
-                success: true,
-                message: 'Journée modifiée avec succès'
-            });
-        } else {
-            console.log('❌ Journée non trouvée pour modification ID:', id);
-            res.status(404).json({
-                success: false,
-                message: 'Journée non trouvée'
-            });
-        }
-    });
+  try {
+    const result = await pool.query(
+      `UPDATE journees
+       SET date = $1, vehicule_immat = $2, chauffeur_id = $3,
+           recette_total = $4, manquant = $5, notes = $6
+       WHERE id = $7`,
+      [date, vehicule_immat, chauffeur_id, recette_total || 0, manquant || 0, notes || '', id]
+    );
+    if (result.rowCount === 0) return res.status(404).json({ success: false, message: 'Journée non trouvée' });
+    res.json({ success: true, message: 'Journée modifiée' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-// DELETE supprimer une journée
-app.delete('/api/journees/:id', (req, res) => {
-    const id = parseInt(req.params.id);
-    console.log('🗑️ DELETE /api/journees/:id - ID:', id);
+app.delete('/api/journees/:id', async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) return res.status(400).json({ success: false, message: 'ID invalide' });
 
-    if (isNaN(id)) {
-        return res.status(400).json({
-            success: false,
-            message: 'ID invalide'
-        });
+  try {
+    // Vérifier les dépenses liées
+    const depCheck = await pool.query('SELECT COUNT(*) FROM depenses WHERE journee_id = $1', [id]);
+    if (parseInt(depCheck.rows[0].count) > 0) {
+      return res.status(400).json({ success: false, message: `Impossible de supprimer : ${depCheck.rows[0].count} dépense(s) liée(s)` });
     }
-
-    // Vérifier d'abord si la journée existe
-    db.get('SELECT id FROM journees WHERE id = ?', [id], (err, row) => {
-        if (err) {
-            console.error('❌ Erreur vérification journée:', err.message);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur vérification: ' + err.message
-            });
-        }
-
-        if (!row) {
-            console.log('❌ Journée non trouvée pour suppression ID:', id);
-            return res.status(404).json({
-                success: false,
-                message: 'Journée non trouvée'
-            });
-        }
-
-        // Vérifier s'il y a des dépenses liées
-        db.get('SELECT COUNT(*) as count FROM depenses WHERE journee_id = ?', [id], (err, result) => {
-            if (err) {
-                console.error('❌ Erreur vérification dépenses:', err.message);
-                return res.status(500).json({
-                    success: false,
-                    message: 'Erreur vérification dépenses: ' + err.message
-                });
-            }
-
-            if (result && result.count > 0) {
-                console.log('❌ Dépenses liées trouvées:', result.count);
-                return res.status(400).json({
-                    success: false,
-                    message: `Impossible de supprimer : ${result.count} dépense(s) liée(s) à cette journée`
-                });
-            }
-
-            // Supprimer la journée
-            db.run('DELETE FROM journees WHERE id = ?', [id], function(err) {
-                if (err) {
-                    console.error('❌ Erreur DELETE journée:', err.message);
-                    res.status(500).json({
-                        success: false,
-                        message: 'Erreur suppression: ' + err.message
-                    });
-                } else if (this.changes > 0) {
-                    console.log('✅ Journée supprimée ID:', id);
-                    res.json({
-                        success: true,
-                        message: 'Journée supprimée avec succès'
-                    });
-                } else {
-                    console.log('❌ Aucune ligne affectée ID:', id);
-                    res.status(404).json({
-                        success: false,
-                        message: 'Journée non trouvée'
-                    });
-                }
-            });
-        });
-    });
+    const result = await pool.query('DELETE FROM journees WHERE id = $1', [id]);
+    if (result.rowCount === 0) return res.status(404).json({ success: false, message: 'Journée non trouvée' });
+    res.json({ success: true, message: 'Journée supprimée' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // ========== ROUTES VÉHICULES ==========
-
-// GET tous les véhicules
-app.get('/api/vehicules', (req, res) => {
-    db.all('SELECT * FROM vehicules ORDER BY immatriculation', (err, rows) => {
-        if (err) {
-            res.status(500).json({ success: false, error: err.message });
-        } else {
-            res.json({ success: true, vehicules: rows });
-        }
-    });
+app.get('/api/vehicules', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM vehicules ORDER BY immatriculation');
+    res.json({ success: true, vehicules: result.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-// GET un véhicule spécifique
-app.get('/api/vehicules/:immatriculation', (req, res) => {
-    try {
-        const immatriculation = decodeURIComponent(req.params.immatriculation);
-        console.log('🔍 GET véhicule spécifique:', immatriculation);
-
-        db.get('SELECT * FROM vehicules WHERE immatriculation = ?', [immatriculation], (err, row) => {
-            if (err) {
-                console.error('❌ Erreur SQL:', err.message);
-                res.status(500).json({
-                    success: false,
-                    message: 'Erreur base de données: ' + err.message
-                });
-            } else if (row) {
-                console.log('✅ Véhicule trouvé');
-                res.json({
-                    success: true,
-                    vehicule: row
-                });
-            } else {
-                console.log('❌ Véhicule non trouvé');
-                res.status(404).json({
-                    success: false,
-                    message: 'Véhicule non trouvé'
-                });
-            }
-        });
-    } catch (error) {
-        console.error('❌ Erreur générale:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Erreur serveur: ' + error.message
-        });
-    }
+app.get('/api/vehicules/:immatriculation', async (req, res) => {
+  const immat = decodeURIComponent(req.params.immatriculation);
+  try {
+    const result = await pool.query('SELECT * FROM vehicules WHERE immatriculation = $1', [immat]);
+    if (result.rows.length === 0) return res.status(404).json({ success: false, message: 'Véhicule non trouvé' });
+    res.json({ success: true, vehicule: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-// POST créer un véhicule
-app.post('/api/vehicules', (req, res) => {
-    console.log('POST /api/vehicules', req.body);
-    const { immatriculation, marque, modele, annee, couleur, kilometrage_actuel, statut } = req.body;
+app.post('/api/vehicules', async (req, res) => {
+  const { immatriculation, marque, modele, annee, couleur, kilometrage_actuel, statut } = req.body;
+  if (!immatriculation || !marque || !modele) {
+    return res.status(400).json({ success: false, error: 'Immatriculation, marque et modèle requis' });
+  }
 
-    if (!immatriculation || !marque || !modele) {
-        return res.status(400).json({
-            success: false,
-            error: 'Immatriculation, marque et modèle requis'
-        });
-    }
-
-    db.run(`
-        INSERT OR REPLACE INTO vehicules
-        (immatriculation, marque, modele, annee, couleur, kilometrage_actuel, statut)   
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    `, [immatriculation, marque, modele, annee || null, couleur || '', kilometrage_actuel || 0, statut || 'actif'],
-    function(err) {
-        if (err) {
-            console.error('Erreur création véhicule:', err.message);
-            res.status(500).json({ success: false, error: err.message });
-        } else {
-            res.json({
-                success: true,
-                message: 'Véhicule enregistré',
-                id: this.lastID
-            });
-        }
-    });
+  try {
+    await pool.query(
+      `INSERT INTO vehicules (immatriculation, marque, modele, annee, couleur, kilometrage_actuel, statut)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (immatriculation) DO UPDATE SET
+         marque = EXCLUDED.marque,
+         modele = EXCLUDED.modele,
+         annee = EXCLUDED.annee,
+         couleur = EXCLUDED.couleur,
+         kilometrage_actuel = EXCLUDED.kilometrage_actuel,
+         statut = EXCLUDED.statut`,
+      [immatriculation, marque, modele, annee || null, couleur || '', kilometrage_actuel || 0, statut || 'actif']
+    );
+    res.json({ success: true, message: 'Véhicule enregistré' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-// PUT modifier un véhicule
-app.put('/api/vehicules/:immatriculation', (req, res) => {
-    const ancienneImmat = decodeURIComponent(req.params.immatriculation);
-    const data = req.body;
+app.put('/api/vehicules/:immatriculation', async (req, res) => {
+  const ancienneImmat = decodeURIComponent(req.params.immatriculation);
+  const { immatriculation, marque, modele, annee, couleur, kilometrage_actuel, statut } = req.body;
+  if (!immatriculation || !marque) {
+    return res.status(400).json({ success: false, message: 'Immatriculation et marque obligatoires' });
+  }
 
-    console.log('🔄 PUT Request:', {
-        ancienne: ancienneImmat,
-        nouvelle: data.immatriculation,
-        timestamp: new Date().toISOString()
-    });
-
-    // Validation
-    if (!data.immatriculation || !data.marque) {
-        return res.status(400).json({
-            success: false,
-            message: 'Immatriculation et marque sont obligatoires'
-        });
+  try {
+    if (ancienneImmat !== immatriculation) {
+      const existing = await pool.query('SELECT immatriculation FROM vehicules WHERE immatriculation = $1', [immatriculation]);
+      if (existing.rows.length > 0) {
+        return res.status(409).json({ success: false, message: 'Cette immatriculation existe déjà' });
+      }
     }
-
-    // Fonction principale
-    const processUpdate = () => {
-        const sql = `
-            UPDATE vehicules
-            SET immatriculation = ?, marque = ?, modele = ?,
-                annee = ?, couleur = ?, kilometrage_actuel = ?, statut = ?
-            WHERE immatriculation = ?
-        `;
-
-        const params = [
-            data.immatriculation,
-            data.marque,
-            data.modele || '',
-            data.annee || '',
-            data.couleur || '',
-            data.kilometrage_actuel || 0,
-            data.statut || 'actif',
-            ancienneImmat
-        ];
-
-        db.run(sql, params, function(err) {
-            if (err) {
-                console.error('❌ SQL Error:', err.message);
-                // Gestion spécifique des erreurs
-                if (err.message.includes('UNIQUE constraint failed')) {
-                    return res.status(409).json({
-                        success: false,
-                        message: 'Cette immatriculation existe déjà. Veuillez en choisir une autre.',
-                        code: 'DUPLICATE_IMMAT'
-                    });
-                }
-                return res.status(500).json({
-                    success: false,
-                    message: 'Erreur base de données: ' + err.message
-                });
-            }
-
-            if (this.changes > 0) {
-                console.log('✅ Update successful, changes:', this.changes);
-                res.json({
-                    success: true,
-                    message: 'Véhicule modifié avec succès',
-                    vehicule: {
-                        immatriculation: data.immatriculation,
-                        marque: data.marque,
-                        modele: data.modele,
-                        annee: data.annee,
-                        statut: data.statut
-                    }
-                });
-            } else {
-                res.status(404).json({
-                    success: false,
-                    message: 'Véhicule non trouvé'
-                });
-            }
-        });
-    };
-
-    // Vérifier l'unicité seulement si l'immatriculation change
-    if (ancienneImmat !== data.immatriculation) {
-        db.get('SELECT immatriculation FROM vehicules WHERE immatriculation = ?',       
-               [data.immatriculation], (err, row) => {
-            if (err) {
-                return res.status(500).json({
-                    success: false,
-                    message: 'Erreur vérification: ' + err.message
-                });
-            }
-
-            if (row) {
-                return res.status(409).json({
-                    success: false,
-                    message: 'Cette immatriculation existe déjà. Veuillez en choisir une autre.',
-                    code: 'DUPLICATE_IMMAT',
-                    existingImmat: row.immatriculation
-                });
-            }
-
-            // Pas de doublon, procéder
-            processUpdate();
-        });
-    } else {
-        // Même immatriculation, pas besoin de vérifier
-        processUpdate();
-    }
+    const result = await pool.query(
+      `UPDATE vehicules
+       SET immatriculation = $1, marque = $2, modele = $3, annee = $4, couleur = $5, kilometrage_actuel = $6, statut = $7
+       WHERE immatriculation = $8`,
+      [immatriculation, marque, modele || '', annee || null, couleur || '', kilometrage_actuel || 0, statut || 'actif', ancienneImmat]
+    );
+    if (result.rowCount === 0) return res.status(404).json({ success: false, message: 'Véhicule non trouvé' });
+    res.json({ success: true, message: 'Véhicule modifié' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-// DELETE supprimer un véhicule
-app.delete('/api/vehicules/:immatriculation', (req, res) => {
-    try {
-        const immatriculation = decodeURIComponent(req.params.immatriculation);
-        console.log('🗑️ DELETE véhicule:', immatriculation);
-
-        // Vérifier si le véhicule existe
-        db.get('SELECT * FROM vehicules WHERE immatriculation = ?', [immatriculation], (err, row) => {
-            if (err) {
-                console.error('❌ Erreur vérification:', err.message);
-                return res.status(500).json({
-                    success: false,
-                    message: 'Erreur base de données: ' + err.message
-                });
-            }
-
-            if (!row) {
-                console.log('❌ Véhicule non trouvé pour suppression');
-                return res.status(404).json({
-                    success: false,
-                    message: 'Véhicule non trouvé'
-                });
-            }
-
-            // Supprimer de la base de données
-            db.run('DELETE FROM vehicules WHERE immatriculation = ?', [immatriculation], function(err) {
-                if (err) {
-                    console.error('❌ Erreur DELETE:', err.message);
-                    res.status(500).json({
-                        success: false,
-                        message: 'Erreur lors de la suppression: ' + err.message        
-                    });
-                } else {
-                    console.log('✅ Véhicule supprimé, lignes affectées:', this.changes);
-                    res.json({
-                        success: true,
-                        message: 'Véhicule supprimé avec succès'
-                    });
-                }
-            });
-        });
-    } catch (error) {
-        console.error('❌ Erreur générale:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Erreur serveur: ' + error.message
-        });
-    }
+app.delete('/api/vehicules/:immatriculation', async (req, res) => {
+  const immat = decodeURIComponent(req.params.immatriculation);
+  try {
+    const result = await pool.query('DELETE FROM vehicules WHERE immatriculation = $1', [immat]);
+    if (result.rowCount === 0) return res.status(404).json({ success: false, message: 'Véhicule non trouvé' });
+    res.json({ success: true, message: 'Véhicule supprimé' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // ========== ROUTES CHAUFFEURS ==========
-
-// GET tous les chauffeurs
-app.get('/api/chauffeurs', (req, res) => {
-    db.all('SELECT * FROM chauffeurs ORDER BY nom, prenom', (err, rows) => {
-        if (err) {
-            res.status(500).json({ success: false, error: err.message });
-        } else {
-            res.json({ success: true, chauffeurs: rows });
-        }
-    });
+app.get('/api/chauffeurs', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM chauffeurs ORDER BY nom, prenom');
+    res.json({ success: true, chauffeurs: result.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-// POST créer un chauffeur
-app.post('/api/chauffeurs', (req, res) => {
-    console.log('POST /api/chauffeurs', req.body);
-    const { nom, prenom, telephone, permis_numero, statut } = req.body;
+app.get('/api/chauffeurs/:id', async (req, res) => {
+  const id = parseInt(req.params.id);
+  try {
+    const result = await pool.query('SELECT * FROM chauffeurs WHERE id = $1', [id]);
+    if (result.rows.length === 0) return res.status(404).json({ success: false, message: 'Chauffeur non trouvé' });
+    res.json({ success: true, chauffeur: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
-    if (!nom || !prenom || !telephone || !permis_numero) {
-        return res.status(400).json({
-            success: false,
-            error: 'Tous les champs sont requis'
-        });
+app.post('/api/chauffeurs', async (req, res) => {
+  const { nom, prenom, telephone, permis_numero, statut } = req.body;
+  if (!nom || !prenom || !telephone || !permis_numero) {
+    return res.status(400).json({ success: false, error: 'Tous les champs sont requis' });
+  }
+
+  try {
+    const existing = await pool.query('SELECT id FROM chauffeurs WHERE permis_numero = $1', [permis_numero]);
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ success: false, message: 'Ce numéro de permis existe déjà' });
     }
-
-    db.run(`
-        INSERT INTO chauffeurs (nom, prenom, telephone, permis_numero, statut)
-        VALUES (?, ?, ?, ?, ?)
-    `, [nom, prenom, telephone, permis_numero, statut || 'actif'],
-    function(err) {
-        if (err) {
-            console.error('Erreur création chauffeur:', err.message);
-            res.status(500).json({ success: false, error: err.message });
-        } else {
-            res.json({
-                success: true,
-                message: 'Chauffeur enregistré',
-                id: this.lastID
-            });
-        }
-    });
+    const result = await pool.query(
+      `INSERT INTO chauffeurs (nom, prenom, telephone, permis_numero, statut)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      [nom, prenom, telephone, permis_numero, statut || 'actif']
+    );
+    res.json({ success: true, message: 'Chauffeur enregistré', id: result.rows[0].id });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-// GET un chauffeur spécifique
-app.get('/api/chauffeurs/:id', (req, res) => {
-    const id = parseInt(req.params.id);
+app.put('/api/chauffeurs/:id', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const { nom, prenom, telephone, permis_numero, statut } = req.body;
+  if (!nom || !prenom || !telephone || !permis_numero) {
+    return res.status(400).json({ success: false, message: 'Tous les champs sont obligatoires' });
+  }
 
-    db.get('SELECT * FROM chauffeurs WHERE id = ?', [id], (err, row) => {
-        if (err) {
-            res.status(500).json({ success: false, error: err.message });
-        } else if (row) {
-            res.json({ success: true, chauffeur: row });
-        } else {
-            res.status(404).json({ success: false, message: 'Chauffeur non trouvé' });  
-        }
-    });
-});
-
-// PUT modifier un chauffeur
-app.put('/api/chauffeurs/:id', (req, res) => {
-    const id = parseInt(req.params.id);
-    const data = req.body;
-    console.log('✏️ Modification chauffeur:', id, data);
-
-    // Validation selon ta structure
-    if (!data.nom || !data.prenom || !data.permis_numero || !data.telephone) {
-        return res.status(400).json({
-            success: false,
-            message: 'Nom, prénom, téléphone et numéro de permis sont obligatoires'     
-        });
+  try {
+    const existing = await pool.query('SELECT id FROM chauffeurs WHERE permis_numero = $1 AND id != $2', [permis_numero, id]);
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ success: false, message: 'Ce numéro de permis est déjà utilisé' });
     }
-
-    // Vérifier si le numéro de permis existe déjà (sauf pour ce chauffeur)
-    db.get('SELECT id FROM chauffeurs WHERE permis_numero = ? AND id != ?',
-           [data.permis_numero, id], (err, row) => {
-        if (err) {
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur vérification permis: ' + err.message
-            });
-        }
-
-        if (row) {
-            return res.status(409).json({
-                success: false,
-                message: 'Ce numéro de permis est déjà utilisé par un autre chauffeur', 
-                code: 'DUPLICATE_PERMIS'
-            });
-        }
-
-        // Mettre à jour selon ta structure
-        const sql = `
-            UPDATE chauffeurs
-            SET nom = ?, prenom = ?, telephone = ?,
-                permis_numero = ?, statut = ?
-            WHERE id = ?
-        `;
-
-        const params = [
-            data.nom,
-            data.prenom,
-            data.telephone,
-            data.permis_numero,
-            data.statut || 'actif',
-            id
-        ];
-
-        db.run(sql, params, function(err) {
-            if (err) {
-                console.error('❌ Erreur UPDATE chauffeur:', err.message);
-                res.status(500).json({
-                    success: false,
-                    message: 'Erreur modification: ' + err.message
-                });
-            } else if (this.changes > 0) {
-                console.log('✅ Chauffeur modifié');
-                res.json({
-                    success: true,
-                    message: 'Chauffeur modifié avec succès'
-                });
-            } else {
-                res.status(404).json({
-                    success: false,
-                    message: 'Chauffeur non trouvé'
-                });
-            }
-        });
-    });
+    const result = await pool.query(
+      `UPDATE chauffeurs SET nom = $1, prenom = $2, telephone = $3, permis_numero = $4, statut = $5 WHERE id = $6`,
+      [nom, prenom, telephone, permis_numero, statut || 'actif', id]
+    );
+    if (result.rowCount === 0) return res.status(404).json({ success: false, message: 'Chauffeur non trouvé' });
+    res.json({ success: true, message: 'Chauffeur modifié' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-// DELETE supprimer un chauffeur
-app.delete('/api/chauffeurs/:id', (req, res) => {
-    const id = parseInt(req.params.id);
-
-    db.run('DELETE FROM chauffeurs WHERE id = ?', [id], function(err) {
-        if (err) {
-            res.status(500).json({ success: false, error: err.message });
-        } else if (this.changes > 0) {
-            res.json({ success: true, message: 'Chauffeur supprimé' });
-        } else {
-            res.status(404).json({ success: false, message: 'Chauffeur non trouvé' });  
-        }
-    });
-});
-
-// ========== ROUTES CATÉGORIES ==========
-
-// GET toutes les catégories
-app.get('/api/categories', (req, res) => {
-    db.all('SELECT * FROM categories ORDER BY type, nom', (err, rows) => {
-        if (err) {
-            res.status(500).json({ success: false, error: err.message });
-        } else {
-            res.json({ success: true, categories: rows });
-        }
-    });
-});
-
-// POST créer une catégorie
-app.post('/api/categories', (req, res) => {
-    console.log('POST /api/categories', req.body);
-    const { nom, type, description } = req.body;
-
-    if (!nom || !type) {
-        return res.status(400).json({
-            success: false,
-            error: 'Nom et type requis'
-        });
-    }
-
-    db.run(`
-        INSERT INTO categories (nom, type, description)
-        VALUES (?, ?, ?)
-    `, [nom, type, description || ''],
-    function(err) {
-        if (err) {
-            console.error('Erreur création catégorie:', err.message);
-            res.status(500).json({ success: false, error: err.message });
-        } else {
-            res.json({
-                success: true,
-                message: 'Catégorie créée',
-                id: this.lastID
-            });
-        }
-    });
-});
-
-// GET une catégorie spécifique
-app.get('/api/categories/:id', (req, res) => {
-    const id = parseInt(req.params.id);
-
-    db.get('SELECT * FROM categories WHERE id = ?', [id], (err, row) => {
-        if (err) {
-            res.status(500).json({ success: false, error: err.message });
-        } else if (row) {
-            res.json({ success: true, categorie: row });
-        } else {
-            res.status(404).json({ success: false, message: 'Catégorie non trouvée' }); 
-        }
-    });
-});
-
-// PUT modifier une catégorie
-app.put('/api/categories/:id', (req, res) => {
-    const id = parseInt(req.params.id);
-    const data = req.body;
-    console.log('✏️ Modification catégorie:', id, data);
-
-    // Validation selon ta structure
-    if (!data.nom || !data.type) {
-        return res.status(400).json({
-            success: false,
-            message: 'Nom et type sont obligatoires'
-        });
-    }
-
-    // Vérifier si le nom existe déjà (sauf pour cette catégorie)
-    db.get('SELECT id FROM categories WHERE nom = ? AND id != ?',
-           [data.nom, id], (err, row) => {
-        if (err) {
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur vérification nom: ' + err.message
-            });
-        }
-
-        if (row) {
-            return res.status(409).json({
-                success: false,
-                message: 'Ce nom de catégorie existe déjà',
-                code: 'DUPLICATE_CATEGORY'
-            });
-        }
-
-        // Mettre à jour selon ta structure
-        const sql = `
-            UPDATE categories
-            SET nom = ?, type = ?, description = ?
-            WHERE id = ?
-        `;
-
-        const params = [
-            data.nom,
-            data.type,
-            data.description || '',
-            id
-        ];
-
-        db.run(sql, params, function(err) {
-            if (err) {
-                console.error('❌ Erreur UPDATE catégorie:', err.message);
-                res.status(500).json({
-                    success: false,
-                    message: 'Erreur modification: ' + err.message
-                });
-            } else if (this.changes > 0) {
-                console.log('✅ Catégorie modifiée');
-                res.json({
-                    success: true,
-                    message: 'Catégorie modifiée avec succès'
-                });
-            } else {
-                res.status(404).json({
-                    success: false,
-                    message: 'Catégorie non trouvée'
-                });
-            }
-        });
-    });
-});
-
-// DELETE supprimer une catégorie
-app.delete('/api/categories/:id', (req, res) => {
-    const id = parseInt(req.params.id);
-
-    db.run('DELETE FROM chauffeurs WHERE id = ?', [id], function(err) {
-        if (err) {
-            res.status(500).json({ success: false, error: err.message });
-        } else if (this.changes > 0) {
-            res.json({ success: true, message: 'Chauffeur supprimé' });
-        } else {
-            res.status(404).json({ success: false, message: 'Chauffeur non trouvé' });  
-        }
-    });
-});
-
-// ========== ROUTES CATÉGORIES ==========
-
-// GET toutes les catégories
-app.get('/api/categories', (req, res) => {
-    db.all('SELECT * FROM categories ORDER BY type, nom', (err, rows) => {
-        if (err) {
-            res.status(500).json({ success: false, error: err.message });
-        } else {
-            res.json({ success: true, categories: rows });
-        }
-    });
-});
-
-// POST créer une catégorie
-app.post('/api/categories', (req, res) => {
-    console.log('POST /api/categories', req.body);
-    const { nom, type, description } = req.body;
-
-    if (!nom || !type) {
-        return res.status(400).json({
-            success: false,
-            error: 'Nom et type requis'
-        });
-    }
-
-    db.run(`
-        INSERT INTO categories (nom, type, description)
-        VALUES (?, ?, ?)
-    `, [nom, type, description || ''],
-    function(err) {
-        if (err) {
-            console.error('Erreur création catégorie:', err.message);
-            res.status(500).json({ success: false, error: err.message });
-        } else {
-            res.json({
-                success: true,
-                message: 'Catégorie créée',
-                id: this.lastID
-            });
-        }
-    });
-});
-
-// GET une catégorie spécifique
-app.get('/api/categories/:id', (req, res) => {
-    const id = parseInt(req.params.id);
-
-    db.get('SELECT * FROM categories WHERE id = ?', [id], (err, row) => {
-        if (err) {
-            res.status(500).json({ success: false, error: err.message });
-        } else if (row) {
-            res.json({ success: true, categorie: row });
-        } else {
-            res.status(404).json({ success: false, message: 'Catégorie non trouvée' }); 
-        }
-    });
-});
-
-// PUT modifier une catégorie
-app.put('/api/categories/:id', (req, res) => {
-    const id = parseInt(req.params.id);
-    const data = req.body;
-    console.log('✏️ Modification catégorie:', id, data);
-
-    // Validation selon ta structure
-    if (!data.nom || !data.type) {
-        return res.status(400).json({
-            success: false,
-            message: 'Nom et type sont obligatoires'
-        });
-    }
-
-    // Vérifier si le nom existe déjà (sauf pour cette catégorie)
-    db.get('SELECT id FROM categories WHERE nom = ? AND id != ?',
-           [data.nom, id], (err, row) => {
-        if (err) {
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur vérification nom: ' + err.message
-            });
-        }
-
-        if (row) {
-            return res.status(409).json({
-                success: false,
-                message: 'Ce nom de catégorie existe déjà',
-                code: 'DUPLICATE_CATEGORY'
-            });
-        }
-
-        // Mettre à jour selon ta structure
-        const sql = `
-            UPDATE categories
-            SET nom = ?, type = ?, description = ?
-            WHERE id = ?
-        `;
-
-        const params = [
-            data.nom,
-            data.type,
-            data.description || '',
-            id
-        ];
-
-        db.run(sql, params, function(err) {
-            if (err) {
-                console.error('❌ Erreur UPDATE catégorie:', err.message);
-                res.status(500).json({
-                    success: false,
-                    message: 'Erreur modification: ' + err.message
-                });
-            } else if (this.changes > 0) {
-                console.log('✅ Catégorie modifiée');
-                res.json({
-                    success: true,
-                    message: 'Catégorie modifiée avec succès'
-                });
-            } else {
-                res.status(404).json({
-                    success: false,
-                    message: 'Catégorie non trouvée'
-                });
-            }
-        });
-    });
-});
-
-// DELETE supprimer une catégorie
-/*app.delete('/api/categories/:id', (req, res) => {
-    const id = parseInt(req.params.id);
-    console.log('🗑️ Suppression catégorie ID:', id);
-
-    // Supprimer directement
-    db.run('DELETE FROM categories WHERE id = ?', [id], function(err) {
-        if (err) {
-            console.error('❌ Erreur DELETE catégorie:', err.message);
-            res.status(500).json({
-                success: false,
-                message: 'Erreur suppression: ' + err.message
-            });
-        } else if (this.changes > 0) {
-            console.log('✅ Catégorie supprimée, lignes:', this.changes);
-            res.json({
-                success: true,
-                message: 'Catégorie supprimée avec succès'
-            });
-        } else {
-            res.status(404).json({
-                success: false,
-                message: 'Catégorie non trouvée'
-            });
-        }
-    });
-});*/
-
-// DELETE supprimer une catégorie - VERSION SIMPLIFIÉE
-// ========== ROUTE DELETE CATÉGORIE ==========
-app.delete('/api/categories/:id', (req, res) => {
-    const id = parseInt(req.params.id);
-    console.log('🗑️ DELETE /api/categories/:id - ID:', id);
-
-    if (isNaN(id)) {
-        return res.status(400).json({
-            success: false,
-            message: 'ID invalide'
-        });
-    }
-
-    // Vérifier d'abord si la catégorie existe
-    db.get('SELECT id FROM categories WHERE id = ?', [id], (err, row) => {
-        if (err) {
-            console.error('❌ Erreur vérification catégorie:', err.message);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur vérification: ' + err.message
-            });
-        }
-
-        if (!row) {
-            console.log('❌ Catégorie non trouvée pour suppression ID:', id);
-            return res.status(404).json({
-                success: false,
-                message: 'Catégorie non trouvée'
-            });
-        }
-
-        // Vérifier s'il y a des dépenses liées
-        db.get('SELECT COUNT(*) as count FROM depenses WHERE categorie_id = ?', [id], (err, result) => {
-            if (err) {
-                console.error('❌ Erreur vérification dépenses:', err.message);
-                return res.status(500).json({
-                    success: false,
-                    message: 'Erreur vérification dépenses: ' + err.message
-                });
-            }
-
-            if (result && result.count > 0) {
-                console.log('❌ Dépenses liées trouvées:', result.count);
-                return res.status(400).json({
-                    success: false,
-                    message: `Impossible de supprimer : ${result.count} dépense(s) liée(s) à cette catégorie`
-                });
-            }
-
-            // Supprimer la catégorie
-            db.run('DELETE FROM categories WHERE id = ?', [id], function(err) {
-                if (err) {
-                    console.error('❌ Erreur DELETE catégorie:', err.message);
-                    res.status(500).json({
-                        success: false,
-                        message: 'Erreur suppression: ' + err.message
-                    });
-                } else if (this.changes > 0) {
-                    console.log('✅ Catégorie supprimée ID:', id);
-                    res.json({
-                        success: true,
-                        message: 'Catégorie supprimée avec succès'
-                    });
-                } else {
-                    console.log('❌ Aucune ligne affectée ID:', id);
-                    res.status(404).json({
-                        success: false,
-                        message: 'Catégorie non trouvée'
-                    });
-                }
-            });
-        });
-    });
+app.delete('/api/chauffeurs/:id', async (req, res) => {
+  const id = parseInt(req.params.id);
+  try {
+    const result = await pool.query('DELETE FROM chauffeurs WHERE id = $1', [id]);
+    if (result.rowCount === 0) return res.status(404).json({ success: false, message: 'Chauffeur non trouvé' });
+    res.json({ success: true, message: 'Chauffeur supprimé' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // ========== ROUTES DÉPENSES ==========
-
-// GET toutes les dépenses
-app.get('/api/depenses', (req, res) => {
-    db.all(`
-        SELECT d.*, c.nom as categorie_nom
-        FROM depenses d
-        LEFT JOIN categories c ON d.categorie_id = c.id
-        ORDER BY d.created_at DESC
-    `, (err, rows) => {
-        if (err) {
-            res.status(500).json({ success: false, error: err.message });
-        } else {
-            res.json({ success: true, depenses: rows });
-        }
-    });
-});
-
-// POST créer une dépense
-app.post('/api/depenses', (req, res) => {
-    console.log('POST /api/depenses', req.body);
-    const { journee_id, categorie_id, montant, description } = req.body;
-
-    if (!montant || !categorie_id || !description) {
-        return res.status(400).json({
-            success: false,
-            error: 'Montant, catégorie et description requis'
-        });
-    }
-
-    db.run(`
-        INSERT INTO depenses (journee_id, categorie_id, montant, description)
-        VALUES (?, ?, ?, ?)
-    `, [journee_id || null, categorie_id, montant, description],
-    function(err) {
-        if (err) {
-            console.error('Erreur création dépense:', err.message);
-            res.status(500).json({ success: false, error: err.message });
-        } else {
-            res.json({
-                success: true,
-                message: 'Dépense enregistrée',
-                id: this.lastID
-            });
-        }
-    });
-});
-
-// GET une dépense spécifique
-app.get('/api/depenses/:id', (req, res) => {
-    const id = parseInt(req.params.id);
-    console.log('📥 GET /api/depenses/:id - ID:', id);
-
-    if (isNaN(id)) {
-        return res.status(400).json({
-            success: false,
-            message: 'ID invalide'
-        });
-    }
-
-    const sql = `
-        SELECT d.*, c.nom as categorie_nom
-        FROM depenses d
-        LEFT JOIN categories c ON d.categorie_id = c.id
-        WHERE d.id = ?
+app.get('/api/depenses', async (req, res) => {
+  try {
+    const { journee_id, categorie_id, date_debut, date_fin, limit = 100 } = req.query;
+    let sql = `
+      SELECT d.*, c.nom as categorie_nom
+      FROM depenses d
+      LEFT JOIN categories c ON d.categorie_id = c.id
+      WHERE 1=1
     `;
+    const params = [];
+    let idx = 1;
 
-    db.get(sql, [id], (err, row) => {
-        if (err) {
-            console.error('❌ Erreur GET dépense:', err.message);
-            res.status(500).json({
-                success: false,
-                message: 'Erreur serveur: ' + err.message
-            });
-        } else if (row) {
-            console.log('✅ Dépense trouvée:', row.id);
-            res.json({
-                success: true,
-                depense: row
-            });
-        } else {
-            console.log('❌ Dépense non trouvée ID:', id);
-            res.status(404).json({
-                success: false,
-                message: 'Dépense non trouvée'
-            });
-        }
-    });
+    if (journee_id) {
+      sql += ` AND d.journee_id = $${idx++}`;
+      params.push(journee_id);
+    }
+    if (categorie_id) {
+      sql += ` AND d.categorie_id = $${idx++}`;
+      params.push(categorie_id);
+    }
+    if (date_debut) {
+      sql += ` AND d.created_at >= $${idx++}`;
+      params.push(date_debut);
+    }
+    if (date_fin) {
+      sql += ` AND d.created_at <= $${idx++}`;
+      params.push(date_fin);
+    }
+    sql += ` ORDER BY d.created_at DESC LIMIT $${idx++}`;
+    params.push(parseInt(limit));
+
+    const result = await pool.query(sql, params);
+    res.json({ success: true, depenses: result.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-// PUT modifier une dépense
-app.put('/api/depenses/:id', (req, res) => {
-    const id = parseInt(req.params.id);
-    const data = req.body;
-    console.log('✏️ PUT /api/depenses/:id - ID:', id, 'Data:', data);
-
-    if (isNaN(id)) {
-        return res.status(400).json({
-            success: false,
-            message: 'ID invalide'
-        });
-    }
-
-    // Validation
-    if (!data.journee_id || !data.categorie_id || !data.montant) {
-        return res.status(400).json({
-            success: false,
-            message: 'Journée, catégorie et montant sont obligatoires'
-        });
-    }
-
-    const sql = `
-        UPDATE depenses
-        SET journee_id = ?, categorie_id = ?, montant = ?, description = ?
-        WHERE id = ?
-    `;
-
-    const params = [
-        data.journee_id,
-        data.categorie_id,
-        data.montant,
-        data.description || '',
-        id
-    ];
-
-    db.run(sql, params, function(err) {
-        if (err) {
-            console.error('❌ Erreur UPDATE dépense:', err.message);
-            res.status(500).json({
-                success: false,
-                message: 'Erreur modification: ' + err.message
-            });
-        } else if (this.changes > 0) {
-            console.log('✅ Dépense modifiée ID:', id);
-            res.json({
-                success: true,
-                message: 'Dépense modifiée avec succès'
-            });
-        } else {
-            console.log('❌ Dépense non trouvée pour modification ID:', id);
-            res.status(404).json({
-                success: false,
-                message: 'Dépense non trouvée'
-            });
-        }
-    });
+app.get('/api/depenses/:id', async (req, res) => {
+  const id = parseInt(req.params.id);
+  try {
+    const result = await pool.query(
+      `SELECT d.*, c.nom as categorie_nom
+       FROM depenses d
+       LEFT JOIN categories c ON d.categorie_id = c.id
+       WHERE d.id = $1`,
+      [id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ success: false, message: 'Dépense non trouvée' });
+    res.json({ success: true, depense: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-// DELETE supprimer une dépense
-app.delete('/api/depenses/:id', (req, res) => {
-    const id = parseInt(req.params.id);
-    console.log('🗑️ DELETE /api/depenses/:id - ID:', id);
+app.post('/api/depenses', async (req, res) => {
+  const { journee_id, categorie_id, montant, description } = req.body;
+  if (!montant || !categorie_id || !description) {
+    return res.status(400).json({ success: false, error: 'Montant, catégorie et description requis' });
+  }
+  try {
+    const result = await pool.query(
+      `INSERT INTO depenses (journee_id, categorie_id, montant, description)
+       VALUES ($1, $2, $3, $4) RETURNING id`,
+      [journee_id || null, categorie_id, montant, description]
+    );
+    res.json({ success: true, message: 'Dépense enregistrée', id: result.rows[0].id });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
-    if (isNaN(id)) {
-        return res.status(400).json({
-            success: false,
-            message: 'ID invalide'
-        });
+app.put('/api/depenses/:id', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const { journee_id, categorie_id, montant, description } = req.body;
+  if (!categorie_id || !montant) {
+    return res.status(400).json({ success: false, message: 'Catégorie et montant obligatoires' });
+  }
+  try {
+    const result = await pool.query(
+      `UPDATE depenses SET journee_id = $1, categorie_id = $2, montant = $3, description = $4 WHERE id = $5`,
+      [journee_id || null, categorie_id, montant, description || '', id]
+    );
+    if (result.rowCount === 0) return res.status(404).json({ success: false, message: 'Dépense non trouvée' });
+    res.json({ success: true, message: 'Dépense modifiée' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/depenses/:id', async (req, res) => {
+  const id = parseInt(req.params.id);
+  try {
+    const result = await pool.query('DELETE FROM depenses WHERE id = $1', [id]);
+    if (result.rowCount === 0) return res.status(404).json({ success: false, message: 'Dépense non trouvée' });
+    res.json({ success: true, message: 'Dépense supprimée' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ========== ROUTES CATÉGORIES ==========
+app.get('/api/categories', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM categories ORDER BY type, nom');
+    res.json({ success: true, categories: result.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/categories', async (req, res) => {
+  const { nom, type, description } = req.body;
+  if (!nom || !type) return res.status(400).json({ success: false, error: 'Nom et type requis' });
+
+  try {
+    const existing = await pool.query('SELECT id FROM categories WHERE nom = $1', [nom]);
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ success: false, message: 'Cette catégorie existe déjà' });
     }
-
-    db.run('DELETE FROM depenses WHERE id = ?', [id], function(err) {
-        if (err) {
-            console.error('❌ Erreur DELETE dépense:', err.message);
-            res.status(500).json({
-                success: false,
-                message: 'Erreur suppression: ' + err.message
-            });
-        } else if (this.changes > 0) {
-            console.log('✅ Dépense supprimée ID:', id);
-            res.json({
-                success: true,
-                message: 'Dépense supprimée avec succès'
-            });
-        } else {
-            console.log('❌ Dépense non trouvée pour suppression ID:', id);
-            res.status(404).json({
-                success: false,
-                message: 'Dépense non trouvée'
-            });
-        }
-    });
+    const result = await pool.query(
+      `INSERT INTO categories (nom, type, description) VALUES ($1, $2, $3) RETURNING id`,
+      [nom, type, description || '']
+    );
+    res.json({ success: true, message: 'Catégorie créée', id: result.rows[0].id });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // ========== ROUTES STATISTIQUES ==========
+app.get('/api/stats', async (req, res) => {
+  const { date_debut, date_fin } = req.query;
+  try {
+    // Récupération des journées filtrées
+    let journeesQuery = `
+      SELECT j.*, v.immatriculation, v.marque, v.modele,
+             c.nom as chauffeur_nom, c.prenom as chauffeur_prenom
+      FROM journees j
+      LEFT JOIN vehicules v ON j.vehicule_immat = v.immatriculation
+      LEFT JOIN chauffeurs c ON j.chauffeur_id = c.id
+      WHERE 1=1
+    `;
+    const params = [];
+    let idx = 1;
+    if (date_debut) {
+      journeesQuery += ` AND j.date >= $${idx++}`;
+      params.push(date_debut);
+    }
+    if (date_fin) {
+      journeesQuery += ` AND j.date <= $${idx++}`;
+      params.push(date_fin);
+    }
+    journeesQuery += ' ORDER BY j.date DESC';
+    const journeesResult = await pool.query(journeesQuery, params);
+    const journees = journeesResult.rows;
 
-// GET statistiques générales
-app.get('/api/stats', (req, res) => {
-    console.log('GET /api/stats');
+    // Total dépenses
+    const depensesResult = await pool.query('SELECT COALESCE(SUM(montant), 0) as total FROM depenses');
+    const totalDepenses = parseFloat(depensesResult.rows[0].total);
 
-    // Journées
-    db.all(`
-        SELECT j.*, v.immatriculation, v.marque, v.modele,
-               c.nom as chauffeur_nom, c.prenom as chauffeur_prenom
-        FROM journees j
-        LEFT JOIN vehicules v ON j.vehicule_immat = v.immatriculation
-        LEFT JOIN chauffeurs c ON j.chauffeur_id = c.id
-        ORDER BY j.date DESC
-    `, (err, journees) => {
-        if (err) {
-            return res.status(500).json({ success: false, error: err.message });        
-        }
+    // Calculs généraux
+    const totalJournees = journees.length;
+    const totalRecette = journees.reduce((sum, j) => sum + (parseFloat(j.recette_total) || 0), 0);
+    const totalManquant = journees.reduce((sum, j) => sum + (parseFloat(j.manquant) || 0), 0);
+    const recetteReelle = totalRecette - totalManquant;
+    const beneficeNet = recetteReelle - totalDepenses;
+    const tauxManquant = totalRecette > 0 ? ((totalManquant / totalRecette) * 100).toFixed(2) : '0.00';
 
-        // Dépenses
-        db.get('SELECT SUM(montant) as total FROM depenses', (err, depensesRow) => {    
-            if (err) {
-                return res.status(500).json({ success: false, error: err.message });    
-            }
-
-            const totalJournees = journees.length;
-            const totalRecette = journees.reduce((sum, j) => sum + (j.recette_total || 0), 0);
-            const totalManquant = journees.reduce((sum, j) => sum + (j.manquant || 0), 0);
-            const recetteReelle = totalRecette - totalManquant;
-            const totalDepenses = depensesRow.total || 0;
-            const beneficeNet = recetteReelle - totalDepenses;
-
-            // Par véhicule
-            const statsVehicule = {};
-            journees.forEach(j => {
-                const immat = j.immatriculation || j.vehicule_immat;
-                if (!immat) return;
-
-                if (!statsVehicule[immat]) {
-                    statsVehicule[immat] = {
-                        vehicule: `${j.marque || ''} ${j.modele || ''}`.trim() || immat,
-                        immatriculation: immat,
-                        journees: 0,
-                        recette: 0,
-                        manquant: 0,
-                        recette_reelle: 0
-                    };
-                }
-
-                statsVehicule[immat].journees++;
-                statsVehicule[immat].recette += (j.recette_total || 0);
-                statsVehicule[immat].manquant += (j.manquant || 0);
-                statsVehicule[immat].recette_reelle += ((j.recette_total || 0) - (j.manquant || 0));
-            });
-
-            res.json({
-                success: true,
-                stats: {
-                    general: {
-                        total_journees: totalJournees,
-                        total_recette: totalRecette,
-                        total_manquant: totalManquant,
-                        recette_reelle: recetteReelle,
-                        total_depenses: totalDepenses,
-                        benefice_net: beneficeNet,
-                        taux_manquant: totalRecette > 0 ?
-                            ((totalManquant / totalRecette) * 100).toFixed(2) : '0.00'  
-                    },
-                    par_vehicule: Object.values(statsVehicule),
-                    dernieres_journees: journees.slice(0, 10)
-                }
-            });
-        });
+    // Statistiques par véhicule
+    const statsVehicule = {};
+    journees.forEach(j => {
+      const immat = j.immatriculation || j.vehicule_immat;
+      if (!immat) return;
+      if (!statsVehicule[immat]) {
+        statsVehicule[immat] = {
+          vehicule: `${j.marque || ''} ${j.modele || ''}`.trim() || immat,
+          immatriculation: immat,
+          journees: 0,
+          recette: 0,
+          manquant: 0,
+          recette_reelle: 0
+        };
+      }
+      statsVehicule[immat].journees++;
+      statsVehicule[immat].recette += (parseFloat(j.recette_total) || 0);
+      statsVehicule[immat].manquant += (parseFloat(j.manquant) || 0);
+      statsVehicule[immat].recette_reelle += ((parseFloat(j.recette_total) || 0) - (parseFloat(j.manquant) || 0));
     });
+
+    res.json({
+      success: true,
+      stats: {
+        general: {
+          total_journees: totalJournees,
+          total_recette: totalRecette,
+          total_manquant: totalManquant,
+          recette_reelle: recetteReelle,
+          total_depenses: totalDepenses,
+          benefice_net: beneficeNet,
+          taux_manquant: tauxManquant
+        },
+        par_vehicule: Object.values(statsVehicule),
+        dernieres_journees: journees.slice(0, 10)
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-// ========== ROUTES AVEC FILTRES ==========
-
-// Journées avec filtres (alias)
-app.get('/api/journees/filtres', (req, res) => {
-    const { vehicule, date_debut, date_fin, tri } = req.query;
+// ========== ROUTE SPÉCIALE ==========
+app.get('/api/depenses/par-journee-date', async (req, res) => {
+  const { date_debut, date_fin } = req.query;
+  try {
     let sql = `
-        SELECT j.*,
-               v.marque, v.modele, v.immatriculation,
-               c.nom as chauffeur_nom, c.prenom as chauffeur_prenom
-        FROM journees j
-        LEFT JOIN vehicules v ON j.vehicule_immat = v.immatriculation
-        LEFT JOIN chauffeurs c ON j.chauffeur_id = c.id
-        WHERE 1=1
+      SELECT d.*,
+             c.nom as categorie_nom, c.type as categorie_type,
+             j.date as journee_date, j.vehicule_immat,
+             v.marque, v.modele
+      FROM depenses d
+      LEFT JOIN categories c ON d.categorie_id = c.id
+      LEFT JOIN journees j ON d.journee_id = j.id
+      LEFT JOIN vehicules v ON j.vehicule_immat = v.immatriculation
+      WHERE 1=1
     `;
-
     const params = [];
-
-    if (vehicule) {
-        sql += ' AND j.vehicule_immat = ?';
-        params.push(vehicule);
-    }
-
+    let idx = 1;
     if (date_debut) {
-        sql += ' AND j.date >= ?';
-        params.push(date_debut);
+      sql += ` AND j.date >= $${idx++}`;
+      params.push(date_debut);
     }
-
     if (date_fin) {
-        sql += ' AND j.date <= ?';
-        params.push(date_fin);
+      sql += ` AND j.date <= $${idx++}`;
+      params.push(date_fin);
     }
-
-    // Gestion du tri
-    switch(tri) {
-        case 'date_asc':
-            sql += ' ORDER BY j.date ASC';
-            break;
-        case 'recette_desc':
-            sql += ' ORDER BY j.recette_total DESC';
-            break;
-        case 'recette_asc':
-            sql += ' ORDER BY j.recette_total ASC';
-            break;
-        default: // date_desc par défaut
-            sql += ' ORDER BY j.date DESC';
-    }
-
-    // Limiter à 50 résultats maximum
-    sql += ' LIMIT 50';
-
-    db.all(sql, params, (err, rows) => {
-        if (err) {
-            console.error('Erreur journées filtrées:', err.message);
-            res.status(500).json({ success: false, error: err.message });
-        } else {
-            res.json({ success: true, journees: rows });
-        }
-    });
-});
-
-// Dépenses avec filtres
-app.get('/api/depenses/filtres', (req, res) => {
-    const { vehicule_id, date_debut, date_fin, categorie_id, limit } = req.query;       
-
-    let sql = `
-        SELECT d.*,
-               c.nom as categorie_nom, c.type as categorie_type,
-               j.date as journee_date, j.vehicule_immat,
-               v.marque, v.modele
-        FROM depenses d
-        LEFT JOIN categories c ON d.categorie_id = c.id
-        LEFT JOIN journees j ON d.journee_id = j.id
-        LEFT JOIN vehicules v ON j.vehicule_immat = v.immatriculation
-        WHERE 1=1
-    `;
-
-    const params = [];
-
-    if (vehicule_id) {
-        sql += ' AND j.vehicule_immat = ?';
-        params.push(vehicule_id);
-    }
-
-    if (date_debut) {
-        sql += ' AND d.created_at >= ?';
-        params.push(date_debut);
-    }
-
-    if (date_fin) {
-        sql += ' AND d.created_at <= ?';
-        params.push(date_fin);
-    }
-
-    if (categorie_id) {
-        sql += ' AND d.categorie_id = ?';
-        params.push(categorie_id);
-    }
-
-    sql += ' ORDER BY d.created_at DESC';
-
-    if (limit) {
-        sql += ' LIMIT ?';
-        params.push(parseInt(limit));
-    } else {
-        sql += ' LIMIT 100';
-    }
-
-    db.all(sql, params, (err, rows) => {
-        if (err) {
-            console.error('Erreur dépenses filtrées:', err.message);
-            res.status(500).json({ success: false, error: err.message });
-        } else {
-            res.json({ success: true, depenses: rows });
-        }
-    });
-});
-
-// Statistiques des dépenses
-app.get('/api/depenses/stats', (req, res) => {
-    const { date_debut, date_fin } = req.query;
-
-    let sql = `
-        SELECT
-            c.id as categorie_id,
-            c.nom as categorie_nom,
-            c.type as categorie_type,
-            COUNT(d.id) as nombre_depenses,
-            SUM(d.montant) as total_montant,
-            j.vehicule_immat,
-            v.marque,
-            v.modele
-        FROM depenses d
-        LEFT JOIN categories c ON d.categorie_id = c.id
-        LEFT JOIN journees j ON d.journee_id = j.id
-        LEFT JOIN vehicules v ON j.vehicule_immat = v.immatriculation
-        WHERE 1=1
-    `;
-
-    const params = [];
-
-    if (date_debut) {
-        sql += ' AND j.date >= ?';
-        params.push(date_debut);
-    }
-
-    if (date_fin) {
-        sql += ' AND j.date <= ?';
-        params.push(date_fin);
-    }
-
-    sql += ' GROUP BY c.id, j.vehicule_immat ORDER BY total_montant DESC';
-
-    db.all(sql, params, (err, rows) => {
-        if (err) {
-            console.error('Erreur stats dépenses:', err.message);
-            res.status(500).json({ success: false, error: err.message });
-        } else {
-            // Calculer les totaux
-            const totalDepenses = rows.reduce((sum, row) => sum + (row.total_montant || 0), 0);
-
-            // Regrouper par catégorie
-            const parCategorie = {};
-            rows.forEach(row => {
-                if (!parCategorie[row.categorie_id]) {
-                    parCategorie[row.categorie_id] = {
-                        categorie_nom: row.categorie_nom,
-                        categorie_type: row.categorie_type,
-                        total_montant: 0,
-                        nombre_depenses: 0,
-                        par_vehicule: []
-                    };
-                }
-
-                parCategorie[row.categorie_id].total_montant += (row.total_montant || 0);
-                parCategorie[row.categorie_id].nombre_depenses += (row.nombre_depenses || 0);
-
-                if (row.vehicule_immat) {
-                    parCategorie[row.categorie_id].par_vehicule.push({
-                        vehicule_immat: row.vehicule_immat,
-                        vehicule: `${row.marque || ''} ${row.modele || ''}`.trim(),     
-                        montant: row.total_montant
-                    });
-                }
-            });
-
-            res.json({
-                success: true,
-                stats: {
-                    total_depenses: totalDepenses,
-                    nombre_total_depenses: rows.reduce((sum, row) => sum + (row.nombre_depenses || 0), 0),
-                    par_categorie: Object.values(parCategorie),
-                    detail: rows
-                }
-            });
-        }
-    });
-});
-
-// Dépenses par date de journée
-app.get('/api/depenses/par-journee-date', (req, res) => {
-    const { date_debut, date_fin } = req.query;
-    console.log('GET /api/depenses/par-journee-date', { date_debut, date_fin });        
-
-    let sql = `
-        SELECT d.*,
-               c.nom as categorie_nom, c.type as categorie_type,
-               j.date as journee_date, j.vehicule_immat,
-               v.marque, v.modele
-        FROM depenses d
-        LEFT JOIN categories c ON d.categorie_id = c.id
-        LEFT JOIN journees j ON d.journee_id = j.id
-        LEFT JOIN vehicules v ON j.vehicule_immat = v.immatriculation
-        WHERE 1=1
-    `;
-
-    const params = [];
-
-    if (date_debut) {
-        sql += ' AND j.date >= ?';
-        params.push(date_debut);
-    }
-
-    if (date_fin) {
-        sql += ' AND j.date <= ?';
-        params.push(date_fin);
-    }
-
     sql += ' ORDER BY j.date DESC';
 
-    console.log('SQL dépenses par date journée:', sql);
-    console.log('Params:', params);
-
-    db.all(sql, params, (err, rows) => {
-        if (err) {
-            console.error('Erreur dépenses par date journée:', err.message);
-            res.status(500).json({ success: false, error: err.message });
-        } else {
-            console.log(`${rows.length} dépenses trouvées pour la période`);
-            res.json({ success: true, depenses: rows });
-        }
-    });
+    const result = await pool.query(sql, params);
+    res.json({ success: true, depenses: result.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-// ========== ROUTES CATÉGORIES MANQUANTES ==========
-
-// PUT modifier une catégorie
-app.put('/api/categories/:id', (req, res) => {
-    const id = parseInt(req.params.id);
-    const data = req.body;
-    console.log('✏️ PUT /api/categories/:id - ID:', id, 'Data:', data);
-
-    if (isNaN(id)) {
-        return res.status(400).json({
-            success: false,
-            message: 'ID invalide'
-        });
-    }
-
-    // Validation
-    if (!data.nom || !data.type) {
-        return res.status(400).json({
-            success: false,
-            message: 'Nom et type sont obligatoires'
-        });
-    }
-
-    // Vérifier si le nom existe déjà (sauf pour cette catégorie)
-    db.get('SELECT id FROM categories WHERE nom = ? AND id != ?',
-           [data.nom, id], (err, row) => {
-        if (err) {
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur vérification nom: ' + err.message
-            });
-        }
-
-        if (row) {
-            return res.status(409).json({
-                success: false,
-                message: 'Ce nom de catégorie existe déjà',
-                code: 'DUPLICATE_CATEGORY'
-            });
-        }
-
-        // Mettre à jour
-        const sql = `
-            UPDATE categories
-            SET nom = ?, type = ?, description = ?
-            WHERE id = ?
-        `;
-
-        const params = [
-            data.nom,
-            data.type,
-            data.description || '',
-            id
-        ];
-
-        db.run(sql, params, function(err) {
-            if (err) {
-                console.error('❌ Erreur UPDATE catégorie:', err.message);
-                res.status(500).json({
-                    success: false,
-                    message: 'Erreur modification: ' + err.message
-                });
-            } else if (this.changes > 0) {
-                console.log('✅ Catégorie modifiée');
-                res.json({
-                    success: true,
-                    message: 'Catégorie modifiée avec succès'
-                });
-            } else {
-                res.status(404).json({
-                    success: false,
-                    message: 'Catégorie non trouvée'
-                });
-            }
-        });
-    });
-});
-
-// DELETE supprimer une catégorie
-app.delete('/api/categories/:id', (req, res) => {
-    const id = parseInt(req.params.id);
-    console.log('🗑️ DELETE /api/categories/:id - ID:', id);
-
-    if (isNaN(id)) {
-        return res.status(400).json({
-            success: false,
-            message: 'ID invalide'
-        });
-    }
-
-    // Vérifier d'abord si la catégorie existe
-    db.get('SELECT id FROM categories WHERE id = ?', [id], (err, row) => {
-        if (err) {
-            console.error('❌ Erreur vérification catégorie:', err.message);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur vérification: ' + err.message
-            });
-        }
-
-        if (!row) {
-            console.log('❌ Catégorie non trouvée pour suppression ID:', id);
-            return res.status(404).json({
-                success: false,
-                message: 'Catégorie non trouvée'
-            });
-        }
-
-        // Vérifier s'il y a des dépenses liées
-        db.get('SELECT COUNT(*) as count FROM depenses WHERE categorie_id = ?', [id], (err, result) => {
-            if (err) {
-                console.error('❌ Erreur vérification dépenses:', err.message);
-                return res.status(500).json({
-                    success: false,
-                    message: 'Erreur vérification dépenses: ' + err.message
-                });
-            }
-
-            if (result && result.count > 0) {
-                console.log('❌ Dépenses liées trouvées:', result.count);
-                return res.status(400).json({
-                    success: false,
-                    message: `Impossible de supprimer : ${result.count} dépense(s) liée(s) à cette catégorie`
-                });
-            }
-
-            // Supprimer la catégorie
-            db.run('DELETE FROM categories WHERE id = ?', [id], function(err) {
-                if (err) {
-                    console.error('❌ Erreur DELETE catégorie:', err.message);
-                    res.status(500).json({
-                        success: false,
-                        message: 'Erreur suppression: ' + err.message
-                    });
-                } else if (this.changes > 0) {
-                    console.log('✅ Catégorie supprimée ID:', id);
-                    res.json({
-                        success: true,
-                        message: 'Catégorie supprimée avec succès'
-                    });
-                } else {
-                    console.log('❌ Aucune ligne affectée ID:', id);
-                    res.status(404).json({
-                        success: false,
-                        message: 'Catégorie non trouvée'
-                    });
-                }
-            });
-        });
-    });
-});
-
-// GET une catégorie spécifique
-app.get('/api/categories/:id', (req, res) => {
-    const id = parseInt(req.params.id);
-    console.log('📥 GET /api/categories/:id - ID:', id);
-
-    if (isNaN(id)) {
-        return res.status(400).json({
-            success: false,
-            message: 'ID invalide'
-        });
-    }
-
-    db.get('SELECT * FROM categories WHERE id = ?', [id], (err, row) => {
-        if (err) {
-            console.error('❌ Erreur GET catégorie:', err.message);
-            res.status(500).json({
-                success: false,
-                message: 'Erreur serveur: ' + err.message
-            });
-        } else if (row) {
-            console.log('✅ Catégorie trouvée:', row.id);
-            res.json({
-                success: true,
-                categorie: row
-            });
-        } else {
-            console.log('❌ Catégorie non trouvée ID:', id);
-            res.status(404).json({
-                success: false,
-                message: 'Catégorie non trouvée'
-            });
-        }
-    });
-});
-
-// ========== ROUTES PAGES (pour compatibilité) ==========
-
-// Ces routes servent juste à éviter les erreurs 404
-// Le frontend est sur Netlify, donc ces pages sont servies par Netlify
-
-app.get('/nouvelle-depense.html', (req, res) => {
-    res.json({
-        success: true,
-        message: 'Page nouvelle dépense - Frontend sur Netlify',
-        frontend_url: 'https://stellular-arithmetic-650ee8.netlify.app/nouvelle-depense.html'
-    });
-});
-
-app.get('/dashboard.html', (req, res) => {
-    res.json({
-        success: true,
-        message: 'Dashboard - Frontend sur Netlify',
-        frontend_url: 'https://stellular-arithmetic-650ee8.netlify.app/dashboard.html'  
-    });
-});
-
-app.get('/stats.html', (req, res) => {
-    res.json({
-        success: true,
-        message: 'Statistiques - Frontend sur Netlify',
-        frontend_url: 'https://stellular-arithmetic-650ee8.netlify.app/stats.html'      
-    });
-});
-
-app.get('/admin.html', (req, res) => {
-    res.json({
-        success: true,
-        message: 'Admin - Frontend sur Netlify',
-        frontend_url: 'https://stellular-arithmetic-650ee8.netlify.app/admin.html'      
-    });
-});
-
-app.get('/nouvelle-journee.html', (req, res) => {
-    res.json({
-        success: true,
-        message: 'Nouvelle journée - Frontend sur Netlify',
-        frontend_url: 'https://stellular-arithmetic-650ee8.netlify.app/nouvelle-journee.html'
-    });
-});
-
-// ========== GESTION DES ERREURS ==========
-
-// Route 404 pour API
+// ========== GESTION DES ERREURS 404 & GLOBAL ==========
 app.use('/api/*', (req, res) => {
-    res.status(404).json({
-        success: false,
-        message: 'Route API non trouvée',
-        path: req.originalUrl,
-        available_endpoints: [
-            'GET  /api/health',
-            'GET  /api/test',
-            'GET  /api/journees',
-            'POST /api/journees',
-            'GET  /api/journees/:id',
-            'PUT  /api/journees/:id',
-            'DEL  /api/journees/:id',
-            'GET  /api/vehicules',
-            'POST /api/vehicules',
-            'GET  /api/vehicules/:immatriculation',
-            'PUT  /api/vehicules/:immatriculation',
-            'DEL  /api/vehicules/:immatriculation',
-            'GET  /api/chauffeurs',
-            'POST /api/chauffeurs',
-            'GET  /api/chauffeurs/:id',
-            'PUT  /api/chauffeurs/:id',
-            'DEL  /api/chauffeurs/:id',
-            'GET  /api/categories',
-            'POST /api/categories',
-            'GET  /api/categories/:id',
-            'PUT  /api/categories/:id',
-            'DEL  /api/categories/:id',
-            'GET  /api/depenses',
-            'POST /api/depenses',
-            'GET  /api/depenses/:id',
-            'PUT  /api/depenses/:id',
-            'DEL  /api/depenses/:id',
-            'GET  /api/stats',
-            'GET  /api/depenses/filtres',
-            'GET  /api/depenses/stats',
-            'GET  /api/depenses/par-journee-date',
-            'GET  /api/journees/filtres'
-        ]
-    });
+  res.status(404).json({ success: false, message: 'Route API non trouvée', path: req.originalUrl });
 });
 
-// Middleware d'erreur global
 app.use((err, req, res, next) => {
-    console.error('❌ Erreur globale:', err.stack);
-
-    res.status(err.status || 500).json({
-        success: false,
-        message: err.message || 'Erreur interne du serveur',
-        timestamp: new Date().toISOString()
-    });
+  console.error('❌ Erreur globale:', err.stack);
+  res.status(err.status || 500).json({
+    success: false,
+    message: err.message || 'Erreur interne du serveur',
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+  });
 });
 
 // ========== DÉMARRAGE DU SERVEUR ==========
-
-const PORT = process.env.PORT || 3001;
-
-// Vérifier que la DB est prête avant de démarrer
-setTimeout(() => {
-    app.listen(PORT, () => {
-        console.log('='.repeat(70));
-        console.log('🚀 API TAXI MANAGER - VERSION COMPLÈTE POUR RENDER');
-        console.log('='.repeat(70));
-        console.log(`📊 Port: ${PORT}`);
-        console.log(`🌐 URL API: http://localhost:${PORT}`);
-        console.log(`🔗 URL Render: https://taxi-manager-api.onrender.com`);
-        console.log(`🎯 Frontend: https://stellular-arithmetic-650ee8.netlify.app`);    
-        console.log(`🔧 CORS: Activé spécifiquement pour votre frontend`);
-        console.log(`💾 Database: SQLite (${dbPath})`);
-        console.log('='.repeat(70));
-        console.log('📋 Routes principales:');
-        console.log('  GET  /                    - Page d\'accueil API');
-        console.log('  GET  /api/health          - Vérification santé');
-        console.log('  GET  /api/test            - Test API');
-        console.log('  GET  /api/journees        - Liste des journées (avec filtres)'); 
-        console.log('  POST /api/journees        - Créer une journée');
-        console.log('  GET  /api/journees/:id    - Détail journée');
-        console.log('  PUT  /api/journees/:id    - Modifier journée');
-        console.log('  DEL  /api/journees/:id    - Supprimer journée');
-        console.log('  GET  /api/vehicules       - Liste véhicules');
-        console.log('  POST /api/vehicules       - Ajouter véhicule');
-        console.log('  GET  /api/chauffeurs      - Liste chauffeurs');
-        console.log('  POST /api/chauffeurs      - Ajouter chauffeur');
-        console.log('  GET  /api/depenses        - Liste dépenses');
-        console.log('  POST /api/depenses        - Ajouter dépense');
-        console.log('  GET  /api/categories      - Liste catégories');
-        console.log('  GET  /api/stats           - Statistiques');
-        console.log('='.repeat(70));
-        console.log('✅ Serveur prêt à recevoir des requêtes !');
-        console.log('='.repeat(70));
-    });
-}, 1500);
-
-// Gestion propre de l'arrêt
-process.on('SIGINT', () => {
-    console.log('\n🛑 Arrêt du serveur...');
-    if (db) {
-        db.close((err) => {
-            if (err) {
-                console.error('❌ Erreur fermeture DB:', err.message);
-            } else {
-                console.log('✅ Base de données fermée');
-            }
-            process.exit(0);
-        });
-    } else {
-        process.exit(0);
-    }
+const server = app.listen(PORT, () => {
+  console.log('='.repeat(60));
+  console.log('🚀 SERVEUR TAXI MANAGER (PostgreSQL) DÉMARRÉ');
+  console.log('='.repeat(60));
+  console.log(`📊 Port: ${PORT}`);
+  console.log(`🌐 Environnement: ${NODE_ENV}`);
+  console.log(`🔗 URL API: http://localhost:${PORT}/api`);
+  console.log(`🔧 Test API: http://localhost:${PORT}/api/health`);
+  console.log('='.repeat(60));
 });
 
-process.on('SIGTERM', () => {
-    console.log('\n🛑 Signal SIGTERM reçu, arrêt...');
-    if (db) db.close();
-    process.exit(0);
-});
+// ========== ARRÊT PROPRE ==========
+const shutdown = async () => {
+  console.log('\n🛑 Arrêt du serveur...');
+  await pool.end();
+  console.log('✅ Pool PostgreSQL fermé');
+  process.exit(0);
+};
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
