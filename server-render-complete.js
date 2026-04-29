@@ -357,6 +357,147 @@ app.post('/api/vehicules', async (req, res) => {
   }
 });
 
+// PUT : modifier un véhicule (immatriculation = clé primaire)
+app.put('/api/vehicules/:immatriculation', async (req, res) => {
+  const ancienneImmat = decodeURIComponent(req.params.immatriculation);
+  const {
+    immatriculation: nouvelleImmat,
+    marque,
+    modele = '',
+    annee = '',
+    couleur = '',
+    kilometrage_actuel = 0,
+    statut = 'actif'
+  } = req.body;
+
+  console.log('🔄 PUT Request:', {
+    ancienne: ancienneImmat,
+    nouvelle: nouvelleImmat,
+    timestamp: new Date().toISOString()
+  });
+
+  // Validation
+  if (!nouvelleImmat || !marque) {
+    return res.status(400).json({
+      success: false,
+      message: 'Immatriculation et marque sont obligatoires'
+    });
+  }
+
+  try {
+    // Si l'immatriculation change, vérifier l'unicité
+    if (ancienneImmat !== nouvelleImmat) {
+      const checkQuery = 'SELECT immatriculation FROM vehicules WHERE immatriculation = $1';
+      const checkResult = await pool.query(checkQuery, [nouvelleImmat]);
+
+      if (checkResult.rows.length > 0) {
+        return res.status(409).json({
+          success: false,
+          message: 'Cette immatriculation existe déjà. Veuillez en choisir une autre.',
+          code: 'DUPLICATE_IMMAT',
+          existingImmat: checkResult.rows[0].immatriculation
+        });
+      }
+    }
+
+    // Mise à jour
+    const updateQuery = `
+      UPDATE vehicules
+      SET immatriculation = $1,
+          marque = $2,
+          modele = $3,
+          annee = $4,
+          couleur = $5,
+          kilometrage_actuel = $6,
+          statut = $7
+      WHERE immatriculation = $8
+    `;
+    const params = [
+      nouvelleImmat,
+      marque,
+      modele,
+      annee,
+      couleur,
+      kilometrage_actuel,
+      statut,
+      ancienneImmat
+    ];
+
+    const result = await pool.query(updateQuery, params);
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Véhicule non trouvé'
+      });
+    }
+
+    console.log('✅ Update successful, rows affected:', result.rowCount);
+    res.json({
+      success: true,
+      message: 'Véhicule modifié avec succès',
+      vehicule: {
+        immatriculation: nouvelleImmat,
+        marque,
+        modele,
+        annee,
+        statut
+      }
+    });
+
+  } catch (err) {
+    console.error('❌ SQL Error:', err.message);
+
+    // Gestion des contraintes uniques PostgreSQL (code 23505 = duplicate key)
+    if (err.code === '23505') {
+      return res.status(409).json({
+        success: false,
+        message: 'Cette immatriculation existe déjà. Veuillez en choisir une autre.',
+        code: 'DUPLICATE_IMMAT'
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'Erreur base de données: ' + err.message
+    });
+  }
+});
+
+// DELETE : supprimer un véhicule
+app.delete('/api/vehicules/:immatriculation', async (req, res) => {
+  try {
+    const immatriculation = decodeURIComponent(req.params.immatriculation);
+    console.log('🗑️ DELETE véhicule:', immatriculation);
+
+    // Vérifier l'existence + suppression en une seule requête
+    const deleteQuery = 'DELETE FROM vehicules WHERE immatriculation = $1 RETURNING immatriculation';
+    const result = await pool.query(deleteQuery, [immatriculation]);
+
+    if (result.rowCount === 0) {
+      console.log('❌ Véhicule non trouvé pour suppression');
+      return res.status(404).json({
+        success: false,
+        message: 'Véhicule non trouvé'
+      });
+    }
+
+    console.log('✅ Véhicule supprimé, lignes affectées:', result.rowCount);
+    res.json({
+      success: true,
+      message: 'Véhicule supprimé avec succès'
+    });
+
+  } catch (err) {
+    console.error('❌ Erreur DELETE:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la suppression: ' + err.message
+    });
+  }
+});
+
+/*
 app.put('/api/vehicules/:immatriculation', async (req, res) => {
   const ancienneImmat = decodeURIComponent(req.params.immatriculation);
   const { immatriculation, marque, modele, annee, couleur, kilometrage_actuel, statut } = req.body;
@@ -393,7 +534,7 @@ app.delete('/api/vehicules/:immatriculation', async (req, res) => {
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
-});
+});*/
 
 // ========== ROUTES CHAUFFEURS ==========
 app.get('/api/chauffeurs', async (req, res) => {
