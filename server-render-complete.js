@@ -603,98 +603,107 @@ app.post('/api/categories', async (req, res) => {
   }
 });
 
-// GET une catégorie spécifique
-app.get('/api/categories/:id', (req, res) => {
-    const id = parseInt(req.params.id);
+// GET : récupérer une catégorie spécifique
+app.get('/api/categories/:id', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
 
-    // PostgreSQL utilise $1 au lieu de ?
-    db.get('SELECT * FROM categories WHERE id = $1', [id], (err, row) => {
-        if (err) {
-            res.status(500).json({ success: false, error: err.message });
-        } else if (row) {
-            res.json({ success: true, categorie: row });
-        } else {
-            res.status(404).json({ success: false, message: 'Catégorie non trouvée' });
-        }
-    });
+  if (isNaN(id)) {
+    return res.status(400).json({ success: false, message: 'ID invalide' });
+  }
+
+  try {
+    const result = await pool.query('SELECT * FROM categories WHERE id = $1', [id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Catégorie non trouvée' });
+    }
+    res.json({ success: true, categorie: result.rows[0] });
+  } catch (err) {
+    console.error('Erreur GET /categories/:id', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-// PUT modifier une catégorie
-app.put('/api/categories/:id', (req, res) => {
-    const id = parseInt(req.params.id);
-    const data = req.body;
-    console.log('✏️ Modification catégorie:', id, data);
+// PUT : modifier une catégorie
+app.put('/api/categories/:id', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const { nom, type, description = '' } = req.body;
 
-    if (!data.nom || !data.type) {
-        return res.status(400).json({
-            success: false,
-            message: 'Nom et type sont obligatoires'
-        });
+  if (isNaN(id)) {
+    return res.status(400).json({ success: false, message: 'ID invalide' });
+  }
+
+  if (!nom || !type) {
+    return res.status(400).json({
+      success: false,
+      message: 'Nom et type sont obligatoires'
+    });
+  }
+
+  try {
+    // Vérifier l'unicité du nom (sauf pour cette catégorie)
+    const checkQuery = 'SELECT id FROM categories WHERE nom = $1 AND id != $2';
+    const checkResult = await pool.query(checkQuery, [nom, id]);
+
+    if (checkResult.rows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'Ce nom de catégorie existe déjà',
+        code: 'DUPLICATE_CATEGORY'
+      });
     }
 
-    // Vérifier si le nom existe déjà (sauf pour cette catégorie)
-    db.get('SELECT id FROM categories WHERE nom = $1 AND id != $2',
-           [data.nom, id], (err, row) => {
-        if (err) {
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur vérification nom: ' + err.message
-            });
-        }
+    // Mise à jour
+    const updateQuery = `
+      UPDATE categories
+      SET nom = $1, type = $2, description = $3
+      WHERE id = $4
+    `;
+    const updateResult = await pool.query(updateQuery, [nom, type, description, id]);
 
-        if (row) {
-            return res.status(409).json({
-                success: false,
-                message: 'Ce nom de catégorie existe déjà',
-                code: 'DUPLICATE_CATEGORY'
-            });
-        }
+    if (updateResult.rowCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Catégorie non trouvée'
+      });
+    }
 
-        const sql = `
-            UPDATE categories
-            SET nom = $1, type = $2, description = $3
-            WHERE id = $4
-        `;
-
-        const params = [data.nom, data.type, data.description || '', id];
-
-        // Avec le driver pg, utilisez db.query et result.rowCount
-        db.run(sql, params, function(err) {
-            if (err) {
-                console.error('❌ Erreur UPDATE catégorie:', err.message);
-                res.status(500).json({
-                    success: false,
-                    message: 'Erreur modification: ' + err.message
-                });
-            } else if (this.changes > 0) {  // Avec pg : result.rowCount
-                console.log('✅ Catégorie modifiée');
-                res.json({
-                    success: true,
-                    message: 'Catégorie modifiée avec succès'
-                });
-            } else {
-                res.status(404).json({
-                    success: false,
-                    message: 'Catégorie non trouvée'
-                });
-            }
-        });
+    console.log('✅ Catégorie modifiée');
+    res.json({
+      success: true,
+      message: 'Catégorie modifiée avec succès'
     });
+  } catch (err) {
+    console.error('Erreur PUT /categories/:id', err);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur modification: ' + err.message
+    });
+  }
 });
 
-// DELETE supprimer une catégorie (corrigé : categories au lieu de chauffeurs)
-app.delete('/api/categories/:id', (req, res) => {
-    const id = parseInt(req.params.id);
+// DELETE : supprimer une catégorie
+app.delete('/api/categories/:id', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
 
-    db.run('DELETE FROM categories WHERE id = $1', [id], function(err) {
-        if (err) {
-            res.status(500).json({ success: false, error: err.message });
-        } else if (this.changes > 0) {  // Avec pg : result.rowCount
-            res.json({ success: true, message: 'Catégorie supprimée' });
-        } else {
-            res.status(404).json({ success: false, message: 'Catégorie non trouvée' });
-        }
-    });
+  if (isNaN(id)) {
+    return res.status(400).json({ success: false, message: 'ID invalide' });
+  }
+
+  try {
+    const result = await pool.query('DELETE FROM categories WHERE id = $1', [id]);
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Catégorie non trouvée'
+      });
+    }
+
+    res.json({ success: true, message: 'Catégorie supprimée' });
+  } catch (err) {
+    console.error('Erreur DELETE /categories/:id', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 
