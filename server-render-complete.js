@@ -5,7 +5,7 @@ const cors = require('cors');
 const { Pool } = require('pg');
 
 // Configuration CORS complète
-const corsOptions = {
+/*const corsOptions = {
     origin: ['https://stellular-arithmetic-650ee8.netlify.app', 'https://taxi-manager-api.onrender.com', 'http://localhost:3000', 'http://localhost:5173'],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
@@ -16,7 +16,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 
 // Gérer les préflight (OPTIONS) explicitement
-app.options('*', cors(corsOptions));
+app.options('*', cors(corsOptions));*/
 
 // ========== CONFIGURATION BASE DE DONNÉES (SUPABASE / RENDER) ==========
 const pool = new Pool({
