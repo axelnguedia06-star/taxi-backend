@@ -5,8 +5,6 @@ const cors = require('cors');
 const { Pool } = require('pg');
 
 const app = express();
-
-const cors = require('cors');
 app.use(cors({
     origin: '*',
     credentials: true,
