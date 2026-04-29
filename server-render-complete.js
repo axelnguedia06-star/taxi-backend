@@ -603,6 +603,101 @@ app.post('/api/categories', async (req, res) => {
   }
 });
 
+// GET une catégorie spécifique
+app.get('/api/categories/:id', (req, res) => {
+    const id = parseInt(req.params.id);
+
+    // PostgreSQL utilise $1 au lieu de ?
+    db.get('SELECT * FROM categories WHERE id = $1', [id], (err, row) => {
+        if (err) {
+            res.status(500).json({ success: false, error: err.message });
+        } else if (row) {
+            res.json({ success: true, categorie: row });
+        } else {
+            res.status(404).json({ success: false, message: 'Catégorie non trouvée' });
+        }
+    });
+});
+
+// PUT modifier une catégorie
+app.put('/api/categories/:id', (req, res) => {
+    const id = parseInt(req.params.id);
+    const data = req.body;
+    console.log('✏️ Modification catégorie:', id, data);
+
+    if (!data.nom || !data.type) {
+        return res.status(400).json({
+            success: false,
+            message: 'Nom et type sont obligatoires'
+        });
+    }
+
+    // Vérifier si le nom existe déjà (sauf pour cette catégorie)
+    db.get('SELECT id FROM categories WHERE nom = $1 AND id != $2',
+           [data.nom, id], (err, row) => {
+        if (err) {
+            return res.status(500).json({
+                success: false,
+                message: 'Erreur vérification nom: ' + err.message
+            });
+        }
+
+        if (row) {
+            return res.status(409).json({
+                success: false,
+                message: 'Ce nom de catégorie existe déjà',
+                code: 'DUPLICATE_CATEGORY'
+            });
+        }
+
+        const sql = `
+            UPDATE categories
+            SET nom = $1, type = $2, description = $3
+            WHERE id = $4
+        `;
+
+        const params = [data.nom, data.type, data.description || '', id];
+
+        // Avec le driver pg, utilisez db.query et result.rowCount
+        db.run(sql, params, function(err) {
+            if (err) {
+                console.error('❌ Erreur UPDATE catégorie:', err.message);
+                res.status(500).json({
+                    success: false,
+                    message: 'Erreur modification: ' + err.message
+                });
+            } else if (this.changes > 0) {  // Avec pg : result.rowCount
+                console.log('✅ Catégorie modifiée');
+                res.json({
+                    success: true,
+                    message: 'Catégorie modifiée avec succès'
+                });
+            } else {
+                res.status(404).json({
+                    success: false,
+                    message: 'Catégorie non trouvée'
+                });
+            }
+        });
+    });
+});
+
+// DELETE supprimer une catégorie (corrigé : categories au lieu de chauffeurs)
+app.delete('/api/categories/:id', (req, res) => {
+    const id = parseInt(req.params.id);
+
+    db.run('DELETE FROM categories WHERE id = $1', [id], function(err) {
+        if (err) {
+            res.status(500).json({ success: false, error: err.message });
+        } else if (this.changes > 0) {  // Avec pg : result.rowCount
+            res.json({ success: true, message: 'Catégorie supprimée' });
+        } else {
+            res.status(404).json({ success: false, message: 'Catégorie non trouvée' });
+        }
+    });
+});
+
+
 // ========== ROUTES STATISTIQUES ==========
 app.get('/api/stats', async (req, res) => {
   const { date_debut, date_fin } = req.query;
