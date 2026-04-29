@@ -6,6 +6,14 @@ const { Pool } = require('pg');
 
 const app = express();
 
+const cors = require('cors');
+app.use(cors({
+    origin: '*',
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+    exposedHeaders: ['Content-Type', 'Authorization']
+}));
+
 // ========== CONFIGURATION BASE DE DONNÉES (SUPABASE / RENDER) ==========
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
