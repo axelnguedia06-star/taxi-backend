@@ -4,6 +4,8 @@ const path = require('path');
 const cors = require('cors');
 const { Pool } = require('pg');
 
+const app = express();
+
 // Configuration CORS complète
 /*const corsOptions = {
     origin: ['https://stellular-arithmetic-650ee8.netlify.app', 'https://taxi-manager-api.onrender.com', 'http://localhost:3000', 'http://localhost:5173'],
