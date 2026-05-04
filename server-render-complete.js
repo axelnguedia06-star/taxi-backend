@@ -188,7 +188,7 @@ app.get('/api/health', (req, res) => {
 // ========== ROUTES JOURNÉES ==========
 app.get('/api/journees', async (req, res) => {
   try {
-    const { vehicule, date_debut, date_fin, tri, limit = 50 } = req.query;
+    const { vehicule, date_debut, date_fin, tri, limit = 1000 } = req.query;
     let sql = `
       SELECT j.*,
              v.marque, v.modele, v.immatriculation,
@@ -616,7 +616,7 @@ app.delete('/api/chauffeurs/:id', async (req, res) => {
 // ========== ROUTES DÉPENSES ==========
 app.get('/api/depenses', async (req, res) => {
   try {
-    const { journee_id, categorie_id, date_debut, date_fin, limit = 100 } = req.query;
+    const { journee_id, categorie_id, date_debut, date_fin, limit = 1000 } = req.query;
     let sql = `
       SELECT d.*, c.nom as categorie_nom
       FROM depenses d
