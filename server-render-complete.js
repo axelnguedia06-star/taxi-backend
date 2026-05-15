@@ -311,6 +311,52 @@ app.delete('/api/journees/:id', async (req, res) => {
   }
 });
 
+// ========== ROUTES VÉHICULES ==========
+app.get('/api/vehicules', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM vehicules ORDER BY immatriculation');
+    res.json({ success: true, vehicules: result.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/vehicules/:immatriculation', async (req, res) => {
+  const immat = decodeURIComponent(req.params.immatriculation);
+  try {
+    const result = await pool.query('SELECT * FROM vehicules WHERE immatriculation = $1', [immat]);
+    if (result.rows.length === 0) return res.status(404).json({ success: false, message: 'Véhicule non trouvé' });
+    res.json({ success: true, vehicule: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/vehicules', async (req, res) => {
+  const { immatriculation, marque, modele, annee, couleur, kilometrage_actuel, statut } = req.body;
+  if (!immatriculation || !marque || !modele) {
+    return res.status(400).json({ success: false, error: 'Immatriculation, marque et modèle requis' });
+  }
+
+  try {
+    await pool.query(
+      `INSERT INTO vehicules (immatriculation, marque, modele, annee, couleur, kilometrage_actuel, statut)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (immatriculation) DO UPDATE SET
+         marque = EXCLUDED.marque,
+         modele = EXCLUDED.modele,
+         annee = EXCLUDED.annee,
+         couleur = EXCLUDED.couleur,
+         kilometrage_actuel = EXCLUDED.kilometrage_actuel,
+         statut = EXCLUDED.statut`,
+      [immatriculation, marque, modele, annee || null, couleur || '', kilometrage_actuel || 0, statut || 'actif']
+    );
+    res.json({ success: true, message: 'Véhicule enregistré' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ========== ROUTES VÉHICULES CORRIGÉES ==========
 
 // PUT : modifier un véhicule
@@ -450,54 +496,10 @@ app.delete('/api/vehicules/:immatriculation', async (req, res) => {
   }
 });
 
-// ========== ROUTES VÉHICULES ==========
-/*app.get('/api/vehicules', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM vehicules ORDER BY immatriculation');
-    res.json({ success: true, vehicules: result.rows });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.get('/api/vehicules/:immatriculation', async (req, res) => {
-  const immat = decodeURIComponent(req.params.immatriculation);
-  try {
-    const result = await pool.query('SELECT * FROM vehicules WHERE immatriculation = $1', [immat]);
-    if (result.rows.length === 0) return res.status(404).json({ success: false, message: 'Véhicule non trouvé' });
-    res.json({ success: true, vehicule: result.rows[0] });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.post('/api/vehicules', async (req, res) => {
-  const { immatriculation, marque, modele, annee, couleur, kilometrage_actuel, statut } = req.body;
-  if (!immatriculation || !marque || !modele) {
-    return res.status(400).json({ success: false, error: 'Immatriculation, marque et modèle requis' });
-  }
-
-  try {
-    await pool.query(
-      `INSERT INTO vehicules (immatriculation, marque, modele, annee, couleur, kilometrage_actuel, statut)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       ON CONFLICT (immatriculation) DO UPDATE SET
-         marque = EXCLUDED.marque,
-         modele = EXCLUDED.modele,
-         annee = EXCLUDED.annee,
-         couleur = EXCLUDED.couleur,
-         kilometrage_actuel = EXCLUDED.kilometrage_actuel,
-         statut = EXCLUDED.statut`,
-      [immatriculation, marque, modele, annee || null, couleur || '', kilometrage_actuel || 0, statut || 'actif']
-    );
-    res.json({ success: true, message: 'Véhicule enregistré' });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+//ANCIENNE VERSION DE PUT & DELETE
 
 // PUT : modifier un véhicule (immatriculation = clé primaire)
-app.put('/api/vehicules/:immatriculation', async (req, res) => {
+/*app.put('/api/vehicules/:immatriculation', async (req, res) => {
   const ancienneImmat = decodeURIComponent(req.params.immatriculation);
   const {
     immatriculation: nouvelleImmat,
