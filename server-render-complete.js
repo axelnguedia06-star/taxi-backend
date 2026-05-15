@@ -311,8 +311,147 @@ app.delete('/api/journees/:id', async (req, res) => {
   }
 });
 
+// ========== ROUTES VÉHICULES CORRIGÉES ==========
+
+// PUT : modifier un véhicule
+app.put('/api/vehicules/:immatriculation', async (req, res) => {
+  // Gérer les différents formats d'encodage
+  let ancienneImmat = req.params.immatriculation;
+  
+  // Décoder proprement (supporte + et %20)
+  try {
+    ancienneImmat = decodeURIComponent(ancienneImmat.replace(/\+/g, ' '));
+  } catch(e) {
+    ancienneImmat = ancienneImmat.replace(/\+/g, ' ');
+  }
+  
+  const {
+    immatriculation: nouvelleImmat,
+    marque,
+    modele = '',
+    annee = '',
+    couleur = '',
+    kilometrage_actuel = 0,
+    statut = 'actif'
+  } = req.body;
+  
+  console.log('🔄 PUT Request:', {
+    ancienne: ancienneImmat,
+    nouvelle: nouvelleImmat,
+    timestamp: new Date().toISOString()
+  });
+  
+  if (!nouvelleImmat || !marque) {
+    return res.status(400).json({
+      success: false,
+      message: 'Immatriculation et marque sont obligatoires'
+    });
+  }
+  
+  try {
+    // Vérifier unicité si l'immatriculation change
+    if (ancienneImmat !== nouvelleImmat) {
+      const checkResult = await pool.query(
+        'SELECT immatriculation FROM vehicules WHERE immatriculation = $1',
+        [nouvelleImmat]
+      );
+      if (checkResult.rows.length > 0) {
+        return res.status(409).json({
+          success: false,
+          message: 'Cette immatriculation existe déjà.'
+        });
+      }
+    }
+    
+    const updateQuery = `
+      UPDATE vehicules
+      SET immatriculation = $1,
+          marque = $2,
+          modele = $3,
+          annee = $4,
+          couleur = $5,
+          kilometrage_actuel = $6,
+          statut = $7
+      WHERE immatriculation = $8
+    `;
+    
+    const result = await pool.query(updateQuery, [
+      nouvelleImmat, marque, modele, annee, couleur, kilometrage_actuel, statut, ancienneImmat
+    ]);
+    
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Véhicule non trouvé'
+      });
+    }
+    
+    console.log('✅ Update successful');
+    res.json({
+      success: true,
+      message: 'Véhicule modifié avec succès',
+      vehicule: { immatriculation: nouvelleImmat, marque, modele, annee, statut }
+    });
+    
+  } catch (err) {
+    console.error('❌ SQL Error:', err.message);
+    if (err.code === '23505') {
+      return res.status(409).json({
+        success: false,
+        message: 'Cette immatriculation existe déjà.'
+      });
+    }
+    res.status(500).json({
+      success: false,
+      message: 'Erreur: ' + err.message
+    });
+  }
+});
+
+// DELETE : supprimer un véhicule
+app.delete('/api/vehicules/:immatriculation', async (req, res) => {
+  try {
+    let immatriculation = req.params.immatriculation;
+    
+    // Décoder proprement
+    try {
+      immatriculation = decodeURIComponent(immatriculation.replace(/\+/g, ' '));
+    } catch(e) {
+      immatriculation = immatriculation.replace(/\+/g, ' ');
+    }
+    
+    console.log('🗑️ DELETE véhicule:', immatriculation);
+    
+    const result = await pool.query(
+      'DELETE FROM vehicules WHERE immatriculation = $1 RETURNING immatriculation',
+      [immatriculation]
+    );
+    
+    if (result.rowCount === 0) {
+      console.log('❌ Véhicule non trouvé');
+      return res.status(404).json({
+        success: false,
+        message: 'Véhicule non trouvé'
+      });
+    }
+    
+    console.log('✅ Véhicule supprimé');
+    res.json({
+      success: true,
+      message: 'Véhicule supprimé avec succès'
+    });
+    
+  } catch (err) {
+    console.error('❌ Erreur DELETE:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur: ' + err.message
+    });
+  }
+});
+
 // ========== ROUTES VÉHICULES ==========
-app.get('/api/vehicules', async (req, res) => {
+/*app.get('/api/vehicules', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM vehicules ORDER BY immatriculation');
     res.json({ success: true, vehicules: result.rows });
@@ -495,7 +634,9 @@ app.delete('/api/vehicules/:immatriculation', async (req, res) => {
       message: 'Erreur lors de la suppression: ' + err.message
     });
   }
-});
+});*/
+
+//Ancienne route modifie par celle au-dessus //
 
 /*
 app.put('/api/vehicules/:immatriculation', async (req, res) => {
