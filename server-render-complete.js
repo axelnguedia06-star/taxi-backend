@@ -457,7 +457,7 @@ app.put('/api/vehicules/:immatriculation', async (req, res) => {
 
 // ========== ROUTES VÉHICULES CORRIGÉES AVEC GESTION DES CONTRAINTES ==========
 
-// PUT : modifier un véhicule (avec mise à jour en cascade CORRIGÉE)
+// PUT : modifier un véhicule (version Supabase compatible)
 app.put('/api/vehicules/:immatriculation', async (req, res) => {
   let ancienneImmat = req.params.immatriculation;
   
@@ -490,96 +490,96 @@ app.put('/api/vehicules/:immatriculation', async (req, res) => {
     });
   }
   
-  const client = await pool.connect();
-  
   try {
-    await client.query('BEGIN');
-    
     if (ancienneImmat === nouvelleImmat) {
-      // Même immatriculation - simple mise à jour
-      const updateQuery = `
-        UPDATE vehicules
-        SET marque = $1, modele = $2, annee = $3, couleur = $4, 
-            kilometrage_actuel = $5, statut = $6
-        WHERE immatriculation = $7
-      `;
-      const result = await client.query(updateQuery, [
-        marque, modele, annee, couleur, kilometrage_actuel, statut, ancienneImmat
-      ]);
+      // === Même immatriculation - simple UPDATE ===
+      const result = await pool.query(
+        `UPDATE vehicules 
+         SET marque = $1, modele = $2, annee = $3, couleur = $4, 
+             kilometrage_actuel = $5, statut = $6
+         WHERE immatriculation = $7`,
+        [marque, modele, annee, couleur, kilometrage_actuel, statut, ancienneImmat]
+      );
       
       if (result.rowCount === 0) {
-        await client.query('ROLLBACK');
         return res.status(404).json({
           success: false,
           message: 'Véhicule non trouvé'
         });
       }
       
-    } else {
-      // Changement d'immatriculation
+      return res.json({
+        success: true,
+        message: 'Véhicule modifié avec succès',
+        vehicule: { immatriculation: nouvelleImmat, marque, modele }
+      });
+    }
+    
+    // === Changement d'immatriculation ===
+    
+    // 1. Vérifier que la nouvelle immatriculation est disponible
+    const check = await pool.query(
+      'SELECT immatriculation FROM vehicules WHERE immatriculation = $1',
+      [nouvelleImmat]
+    );
+    
+    if (check.rows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'Cette immatriculation existe déjà.'
+      });
+    }
+    
+    // 2. Utiliser un client dédié avec désactiver les contraintes temporairement
+    const client = await pool.connect();
+    
+    try {
+      // Désactiver les triggers de contrainte pour cette session
+      await client.query('SET CONSTRAINTS ALL DEFERRED');
       
-      // 1. Vérifier que la nouvelle immatriculation n'existe pas
-      const checkResult = await client.query(
-        'SELECT immatriculation FROM vehicules WHERE immatriculation = $1',
-        [nouvelleImmat]
+      // Étape 1 : Ajouter le nouveau véhicule
+      await client.query(
+        `INSERT INTO vehicules (immatriculation, marque, modele, annee, couleur, kilometrage_actuel, statut)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [nouvelleImmat, marque, modele, annee, couleur, kilometrage_actuel, statut]
       );
-      if (checkResult.rows.length > 0) {
-        await client.query('ROLLBACK');
-        return res.status(409).json({
-          success: false,
-          message: 'Cette immatriculation existe déjà.'
-        });
-      }
       
-      // 2. AJOUTER le nouveau véhicule TEMPORAIREMENT (pour respecter la contrainte)
-      // On copie l'ancien avec la nouvelle immatriculation
-      await client.query(`
-        INSERT INTO vehicules (immatriculation, marque, modele, annee, couleur, kilometrage_actuel, statut)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-      `, [nouvelleImmat, marque, modele, annee, couleur, kilometrage_actuel, statut]);
-      
-      // 3. Mettre à jour les journées liées (maintenant la contrainte est satisfaite)
+      // Étape 2 : Mettre à jour les journées
       await client.query(
         'UPDATE journees SET vehicule_immat = $1 WHERE vehicule_immat = $2',
         [nouvelleImmat, ancienneImmat]
       );
       
-      // 4. Mettre à jour les dépenses liées si la colonne existe
-      try {
-        await client.query(
-          'UPDATE depenses SET vehicule_immat = $1 WHERE vehicule_immat = $2',
-          [nouvelleImmat, ancienneImmat]
-        );
-      } catch(e) {
-        // Ignorer si la colonne n'existe pas
-      }
-      
-      // 5. SUPPRIMER l'ancien véhicule
+      // Étape 3 : Supprimer l'ancien véhicule
       await client.query(
         'DELETE FROM vehicules WHERE immatriculation = $1',
         [ancienneImmat]
       );
+      
+      console.log('✅ Changement immatriculation réussi');
+      res.json({
+        success: true,
+        message: 'Véhicule modifié avec succès. Les journées liées ont été mises à jour.',
+        vehicule: { immatriculation: nouvelleImmat, marque, modele }
+      });
+      
+    } catch (err) {
+      // Tentative de rollback manuel
+      try {
+        await client.query('DELETE FROM vehicules WHERE immatriculation = $1', [nouvelleImmat]);
+      } catch(e) {}
+      
+      throw err;
+    } finally {
+      client.release();
     }
     
-    await client.query('COMMIT');
-    
-    console.log('✅ Véhicule modifié');
-    res.json({
-      success: true,
-      message: 'Véhicule modifié avec succès' + 
-               (ancienneImmat !== nouvelleImmat ? '. Les journées liées ont été mises à jour.' : ''),
-      vehicule: { immatriculation: nouvelleImmat, marque, modele }
-    });
-    
   } catch (err) {
-    await client.query('ROLLBACK');
     console.error('❌ Erreur:', err.message);
     res.status(500).json({
       success: false,
       message: 'Erreur: ' + err.message
     });
-  } finally {
-    client.release();
   }
 });
 
