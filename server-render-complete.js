@@ -358,8 +358,8 @@ app.post('/api/vehicules', async (req, res) => {
 });
 
 // ========== ROUTES VÉHICULES CORRIGÉES ==========
-
 // PUT : modifier un véhicule
+/*
 app.put('/api/vehicules/:immatriculation', async (req, res) => {
   // Gérer les différents formats d'encodage
   let ancienneImmat = req.params.immatriculation;
@@ -451,6 +451,127 @@ app.put('/api/vehicules/:immatriculation', async (req, res) => {
       success: false,
       message: 'Erreur: ' + err.message
     });
+  }
+});
+*/
+
+// ========== ROUTES VÉHICULES CORRIGÉES AVEC GESTION DES CONTRAINTES ==========
+
+// PUT : modifier un véhicule (avec mise à jour en cascade)
+app.put('/api/vehicules/:immatriculation', async (req, res) => {
+  let ancienneImmat = req.params.immatriculation;
+  
+  try {
+    ancienneImmat = decodeURIComponent(ancienneImmat.replace(/\+/g, ' '));
+  } catch(e) {
+    ancienneImmat = ancienneImmat.replace(/\+/g, ' ');
+  }
+  
+  const {
+    immatriculation: nouvelleImmat,
+    marque,
+    modele = '',
+    annee = '',
+    couleur = '',
+    kilometrage_actuel = 0,
+    statut = 'actif'
+  } = req.body;
+  
+  console.log('🔄 PUT Request:', {
+    ancienne: ancienneImmat,
+    nouvelle: nouvelleImmat,
+    timestamp: new Date().toISOString()
+  });
+  
+  if (!nouvelleImmat || !marque) {
+    return res.status(400).json({
+      success: false,
+      message: 'Immatriculation et marque sont obligatoires'
+    });
+  }
+  
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+    
+    // Si l'immatriculation change
+    if (ancienneImmat !== nouvelleImmat) {
+      // 1. Vérifier que la nouvelle immatriculation n'existe pas déjà
+      const checkResult = await client.query(
+        'SELECT immatriculation FROM vehicules WHERE immatriculation = $1',
+        [nouvelleImmat]
+      );
+      if (checkResult.rows.length > 0) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          success: false,
+          message: 'Cette immatriculation existe déjà.'
+        });
+      }
+      
+      // 2. Mettre à jour les journées liées (mise à jour en cascade manuelle)
+      await client.query(
+        'UPDATE journees SET vehicule_immat = $1 WHERE vehicule_immat = $2',
+        [nouvelleImmat, ancienneImmat]
+      );
+      
+      // 3. Mettre à jour les dépenses liées (si elles ont une référence de véhicule)
+      try {
+        await client.query(
+          'UPDATE depenses SET vehicule_immat = $1 WHERE vehicule_immat = $2',
+          [nouvelleImmat, ancienneImmat]
+        );
+      } catch(e) {
+        // Ignorer si la colonne n'existe pas
+      }
+    }
+    
+    // 4. Mettre à jour le véhicule
+    const updateQuery = `
+      UPDATE vehicules
+      SET immatriculation = $1,
+          marque = $2,
+          modele = $3,
+          annee = $4,
+          couleur = $5,
+          kilometrage_actuel = $6,
+          statut = $7
+      WHERE immatriculation = $8
+    `;
+    
+    const result = await client.query(updateQuery, [
+      nouvelleImmat, marque, modele, annee, couleur, kilometrage_actuel, statut, ancienneImmat
+    ]);
+    
+    if (result.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({
+        success: false,
+        message: 'Véhicule non trouvé'
+      });
+    }
+    
+    await client.query('COMMIT');
+    
+    console.log('✅ Véhicule modifié avec mise à jour en cascade');
+    res.json({
+      success: true,
+      message: 'Véhicule modifié avec succès. ' + 
+               (ancienneImmat !== nouvelleImmat ? 
+                `Les journées liées ont été mises à jour.` : ''),
+      vehicule: { immatriculation: nouvelleImmat, marque, modele }
+    });
+    
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('❌ Erreur PUT:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur: ' + err.message
+    });
+  } finally {
+    client.release();
   }
 });
 
