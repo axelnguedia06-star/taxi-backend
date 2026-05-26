@@ -886,7 +886,7 @@ app.delete('/api/chauffeurs/:id', async (req, res) => {
 });
 
 // ========== ROUTES DÉPENSES ==========
-app.get('/api/depenses', async (req, res) => {
+/*app.get('/api/depenses', async (req, res) => {
   try {
     const { journee_id, categorie_id, date_debut, date_fin, limit = 1000 } = req.query;
     let sql = `
@@ -922,9 +922,64 @@ app.get('/api/depenses', async (req, res) => {
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
+});*/
+
+app.get('/api/depenses', async (req, res) => {
+  try {
+    const { journee_id, categorie_id, date_debut, date_fin, limit = 1000 } = req.query;
+    
+    let sql = `
+      SELECT 
+        d.id,
+        d.journee_id,
+        d.categorie_id,
+        d.montant,
+        d.description,
+        d.created_at,
+        COALESCE(c.nom, 'Inconnue') AS categorie_nom,
+        COALESCE(j.date::text, 'N/A') AS date_journee,
+        COALESCE(j.vehicule_immat, 'N/A') AS vehicule_immat,
+        COALESCE(ch.nom || ' ' || ch.prenom, 'N/A') AS chauffeur_nom
+      FROM depenses d
+      LEFT JOIN categories c ON d.categorie_id = c.id
+      LEFT JOIN journees j ON d.journee_id = j.id
+      LEFT JOIN chauffeurs ch ON j.chauffeur_id = ch.id
+      WHERE 1=1
+    `;
+    
+    const params = [];
+    let idx = 1;
+    
+    if (journee_id) {
+      sql += ` AND d.journee_id = $${idx++}`;
+      params.push(journee_id);
+    }
+    if (categorie_id) {
+      sql += ` AND d.categorie_id = $${idx++}`;
+      params.push(categorie_id);
+    }
+    if (date_debut) {
+      sql += ` AND d.created_at >= $${idx++}`;
+      params.push(date_debut);
+    }
+    if (date_fin) {
+      sql += ` AND d.created_at <= $${idx++}`;
+      params.push(date_fin);
+    }
+    
+    sql += ` ORDER BY d.created_at DESC LIMIT $${idx++}`;
+    params.push(parseInt(limit));
+    
+    const result = await pool.query(sql, params);
+    res.json({ success: true, depenses: result.rows });
+    
+  } catch (err) {
+    console.error('❌ Erreur GET dépenses:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-app.get('/api/depenses/:id', async (req, res) => {
+/*app.get('/api/depenses/:id', async (req, res) => {
   const id = parseInt(req.params.id);
   try {
     const result = await pool.query(
@@ -937,6 +992,42 @@ app.get('/api/depenses/:id', async (req, res) => {
     if (result.rows.length === 0) return res.status(404).json({ success: false, message: 'Dépense non trouvée' });
     res.json({ success: true, depense: result.rows[0] });
   } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});*/
+
+app.get('/api/depenses/:id', async (req, res) => {
+  const id = parseInt(req.params.id);
+  
+  try {
+    const result = await pool.query(
+      `SELECT 
+        d.id,
+        d.journee_id,
+        d.categorie_id,
+        d.montant,
+        d.description,
+        d.created_at,
+        COALESCE(c.nom, 'Inconnue') AS categorie_nom,
+        COALESCE(j.date::text, 'N/A') AS date_journee,
+        COALESCE(j.vehicule_immat, 'N/A') AS vehicule_immat,
+        COALESCE(ch.nom || ' ' || ch.prenom, 'N/A') AS chauffeur_nom
+      FROM depenses d
+      LEFT JOIN categories c ON d.categorie_id = c.id
+      LEFT JOIN journees j ON d.journee_id = j.id
+      LEFT JOIN chauffeurs ch ON j.chauffeur_id = ch.id
+      WHERE d.id = $1`,
+      [id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Dépense non trouvée' });
+    }
+    
+    res.json({ success: true, depense: result.rows[0] });
+    
+  } catch (err) {
+    console.error('❌ Erreur GET dépense:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
