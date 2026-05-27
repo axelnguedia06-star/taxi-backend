@@ -186,7 +186,7 @@ app.get('/api/health', (req, res) => {
 });
 
 // ========== ROUTES JOURNÉES ==========
-app.get('/api/journees', async (req, res) => {
+/*app.get('/api/journees', async (req, res) => {
   try {
     const { vehicule, date_debut, date_fin, tri } = req.query; //  ✅ PLUS DE LIMITE ! On récupère tout (limit = 1000)
     let sql = `
@@ -228,6 +228,79 @@ app.get('/api/journees', async (req, res) => {
     console.log(`📅 ${result.rows.length} journées chargées (sans limite)`);
       
     res.json({ success: true, journees: result.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});*/
+
+//Route `/api/journees` avec pagination :
+
+app.get('/api/journees', async (req, res) => {
+  try {
+    const { vehicule, date_debut, date_fin, tri, page = 1, limit = 20 } = req.query;
+    
+    let countSql = `SELECT COUNT(*) FROM journees j WHERE 1=1`;
+    let sql = `
+      SELECT j.*, 
+             v.marque, v.modele, v.immatriculation, 
+             c.nom as chauffeur_nom, c.prenom as chauffeur_prenom
+      FROM journees j
+      LEFT JOIN vehicules v ON j.vehicule_immat = v.immatriculation
+      LEFT JOIN chauffeurs c ON j.chauffeur_id = c.id
+      WHERE 1=1
+    `;
+    
+    const params = [];
+    let paramIndex = 1;
+    
+    if (vehicule) {
+      const condition = ` AND j.vehicule_immat = $${paramIndex++}`;
+      sql += condition;
+      countSql += condition;
+      params.push(vehicule);
+    }
+    if (date_debut) {
+      const condition = ` AND j.date >= $${paramIndex++}`;
+      sql += condition;
+      countSql += condition;
+      params.push(date_debut);
+    }
+    if (date_fin) {
+      const condition = ` AND j.date <= $${paramIndex++}`;
+      sql += condition;
+      countSql += condition;
+      params.push(date_fin);
+    }
+    
+    // Compter le total
+    const countResult = await pool.query(countSql, params);
+    const total = parseInt(countResult.rows[0].count);
+    
+    // Trier
+    switch (tri) {
+      case 'date_asc': sql += ' ORDER BY j.date ASC, j.id ASC'; break;
+      case 'recette_desc': sql += ' ORDER BY j.recette_total DESC'; break;
+      case 'recette_asc': sql += ' ORDER BY j.recette_total ASC'; break;
+      default: sql += ' ORDER BY j.date DESC, j.id DESC';
+    }
+    
+    // Pagination
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    sql += ` LIMIT $${paramIndex++} OFFSET $${paramIndex++}`;
+    params.push(parseInt(limit), offset);
+    
+    const result = await pool.query(sql, params);
+    
+    res.json({ 
+      success: true, 
+      journees: result.rows,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        totalPages: Math.ceil(total / parseInt(limit))
+      }
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -927,7 +1000,8 @@ app.delete('/api/chauffeurs/:id', async (req, res) => {
   }
 });*/
 
-app.get('/api/depenses', async (req, res) => {
+//ROUTES API GET DEPENSES
+/*app.get('/api/depenses', async (req, res) => {
   try {
     const { journee_id, categorie_id, date_debut, date_fin, limit = 1000 } = req.query;
     
@@ -978,6 +1052,45 @@ app.get('/api/depenses', async (req, res) => {
     
   } catch (err) {
     console.error('❌ Erreur GET dépenses:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});*/
+
+// Route `/api/depenses` avec pagination 
+app.get('/api/depenses', async (req, res) => {
+  try {
+    const { page = 1, limit = 20 } = req.query;
+    
+    // Compter le total
+    const countResult = await pool.query('SELECT COUNT(*) FROM depenses');
+    const total = parseInt(countResult.rows[0].count);
+    
+    const result = await pool.query(`
+      SELECT d.*, 
+             j.date as date_journee, 
+             j.vehicule_immat, 
+             c.nom as chauffeur_nom, 
+             c.prenom as chauffeur_prenom,
+             cat.nom as categorie_nom
+      FROM depenses d
+      LEFT JOIN journees j ON d.journee_id = j.id
+      LEFT JOIN chauffeurs c ON j.chauffeur_id = c.id
+      LEFT JOIN categories cat ON d.categorie_id = cat.id
+      ORDER BY d.created_at DESC
+      LIMIT $1 OFFSET $2
+    `, [parseInt(limit), (parseInt(page) - 1) * parseInt(limit)]);
+    
+    res.json({ 
+      success: true, 
+      depenses: result.rows,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        totalPages: Math.ceil(total / parseInt(limit))
+      }
+    });
+  } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
