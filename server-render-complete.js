@@ -188,7 +188,7 @@ app.get('/api/health', (req, res) => {
 // ========== ROUTES JOURNÉES ==========
 app.get('/api/journees', async (req, res) => {
   try {
-    const { vehicule, date_debut, date_fin, tri, limit = 1000 } = req.query;
+    const { vehicule, date_debut, date_fin, tri } = req.query; //  ✅ PLUS DE LIMITE ! On récupère tout (limit = 1000)
     let sql = `
       SELECT j.*,
              v.marque, v.modele, v.immatriculation,
@@ -218,12 +218,15 @@ app.get('/api/journees', async (req, res) => {
       case 'date_asc': sql += ' ORDER BY j.date ASC'; break;
       case 'recette_desc': sql += ' ORDER BY j.recette_total DESC'; break;
       case 'recette_asc': sql += ' ORDER BY j.recette_total ASC'; break;
-      default: sql += ' ORDER BY j.date DESC';
+      default: sql += ' ORDER BY j.date DESC, j.id DESC'; // ✅ Ajout de j.id pour stabilité
     }
-    sql += ` LIMIT $${paramIndex++}`;
-    params.push(parseInt(limit));
+    // ✅ SUPPRIMER LA LIMITE  
+    // sql += ` LIMIT $${paramIndex++}`;
+    // params.push(parseInt(limit));
 
     const result = await pool.query(sql, params);
+    console.log(`📅 ${result.rows.length} journées chargées (sans limite)`);
+      
     res.json({ success: true, journees: result.rows });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
