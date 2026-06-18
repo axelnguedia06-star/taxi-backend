@@ -1547,6 +1547,160 @@ app.get('/api/stats', async (req, res) => {
   }
 });
 
+// ========== ROUTE VIDANGE ==========
+app.get('/api/vehicules/:immat/vidange', async (req, res) => {
+    try {
+        const { immat } = req.params;
+        
+        // 1. Récupérer le véhicule
+        const vehResult = await pool.query(
+            'SELECT * FROM vehicules WHERE immatriculation = $1',
+            [immat]
+        );
+        
+        if (vehResult.rows.length === 0) {
+            return res.json({ success: false, error: 'Véhicule non trouvé' });
+        }
+        
+        const vehicule = vehResult.rows[0];
+        
+        // 2. Récupérer la dernière vidange (via la catégorie "Vidange")
+        const vidangeResult = await pool.query(`
+            SELECT d.*, j.date as date_journee
+            FROM depenses d
+            JOIN journees j ON d.journee_id = j.id
+            JOIN categories c ON d.categorie_id = c.id
+            WHERE j.vehicule_immat = $1 
+            AND c.nom ILIKE '%vidange%'
+            ORDER BY j.date DESC
+            LIMIT 1
+        `, [immat]);
+        
+        let derniereVidange = null;
+        let joursDepuisVidange = null;
+        let intervalle = vehicule.intervalle_vidange || 14;
+        let statut = 'non_planifiee';
+        
+        if (vidangeResult.rows.length > 0) {
+            derniereVidange = vidangeResult.rows[0].date_journee;
+            joursDepuisVidange = Math.floor(
+                (new Date() - new Date(derniereVidange)) / (1000 * 60 * 60 * 24)
+            );
+            
+            // Déterminer le statut
+            if (joursDepuisVidange >= intervalle) {
+                statut = 'urgent';
+            } else if (joursDepuisVidange >= intervalle - 3) {
+                statut = 'bientot';
+            } else {
+                statut = 'ok';
+            }
+        }
+        
+        res.json({
+            success: true,
+            vehicule: immat,
+            intervalle: intervalle,
+            derniere_vidange: derniereVidange,
+            jours_depuis_vidange: joursDepuisVidange,
+            statut: statut,
+            message: statut === 'urgent' ? 
+                `⚠️ Vidange due ! Dernière vidange il y a ${joursDepuisVidange} jours (max: ${intervalle} jours)` :
+                statut === 'bientot' ?
+                `⏰ Vidange dans ${intervalle - joursDepuisVidange} jours` :
+                `✅ Vidange OK (${joursDepuisVidange || '?'} jours depuis dernière)`
+        });
+        
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Route pour mettre à jour l'intervalle personnalisé
+app.put('/api/vehicules/:immat/intervalle-vidange', async (req, res) => {
+    try {
+        const { immat } = req.params;
+        const { intervalle } = req.body;
+        
+        if (!intervalle || intervalle < 1) {
+            return res.json({ success: false, error: 'Intervalle invalide' });
+        }
+        
+        const result = await pool.query(
+            'UPDATE vehicules SET intervalle_vidange = $1 WHERE immatriculation = $2 RETURNING *',
+            [intervalle, immat]
+        );
+        
+        res.json({ 
+            success: true, 
+            vehicule: result.rows[0]
+        });
+        
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Route pour vérifier TOUS les véhicules
+app.get('/api/vidanges/alerte', async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT v.immatriculation, v.marque, v.modele, v.intervalle_vidange,
+                   (SELECT MAX(j.date) 
+                    FROM depenses d 
+                    JOIN journees j ON d.journee_id = j.id 
+                    JOIN categories c ON d.categorie_id = c.id 
+                    WHERE j.vehicule_immat = v.immatriculation 
+                    AND c.nom ILIKE '%vidange%') as derniere_vidange
+            FROM vehicules v
+            WHERE v.statut = 'actif'
+        `);
+        
+        const alertes = result.rows.map(v => {
+            const intervalle = v.intervalle_vidange || 14;
+            let joursDepuis = null;
+            let statut = 'non_planifiee';
+            
+            if (v.derniere_vidange) {
+                joursDepuis = Math.floor(
+                    (new Date() - new Date(v.derniere_vidange)) / (1000 * 60 * 60 * 24)
+                );
+                
+                if (joursDepuis >= intervalle) {
+                    statut = 'urgent';
+                } else if (joursDepuis >= intervalle - 3) {
+                    statut = 'bientot';
+                } else {
+                    statut = 'ok';
+                }
+            }
+            
+            return {
+                immatriculation: v.immatriculation,
+                vehicule: `${v.marque || ''} ${v.modele || ''}`.trim(),
+                intervalle: intervalle,
+                derniere_vidange: v.derniere_vidange,
+                jours_depuis: joursDepuis,
+                statut: statut
+            };
+        });
+        
+        const urgentes = alertes.filter(a => a.statut === 'urgent').length;
+        const bientot = alertes.filter(a => a.statut === 'bientot').length;
+        
+        res.json({
+            success: true,
+            total: alertes.length,
+            urgentes: urgentes,
+            bientot: bientot,
+            alertes: alertes
+        });
+        
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 // ========== ROUTE SPÉCIALE ==========
 app.get('/api/depenses/par-journee-date', async (req, res) => {
   const { date_debut, date_fin } = req.query;
